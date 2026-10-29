@@ -76,4 +76,6 @@ The working Altare GIF fix is included in `animation.py` and `media.py`. Tests o
 
 ## License
 
-No open-source license has been selected yet. Public visibility alone does **not** grant permission to reuse, modify or redistribute the code. Choose and add a license after reviewing any third-party code and dependencies.
+Licensed under the [MIT License](LICENSE). Copyright (c) 2026 Vetal12350.
+
+Third-party libraries and services retain their own licenses and terms.
