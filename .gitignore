@@ -1,0 +1,41 @@
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.*
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+# Local media and runtime caches
+.cache/
+.local/
+cache/
+tmp/
+temp/
+*.log
+*.mp4
+*.webm
+*.gif
+*.webp
+*.part
+# Editor / system
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+# Backups and distributions
+*_copy.py
+*.zip
+*.bak
