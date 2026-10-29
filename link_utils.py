@@ -6,8 +6,24 @@ from urllib.parse import urlsplit, urlunsplit
 
 URL_RE = re.compile(r"https?://[^\s<>\[\]{}]+", re.IGNORECASE)
 TRAILING_PUNCTUATION = ".,!?;:'\"»”)]}"
-X_HOSTS = {"x.com", "www.x.com", "mobile.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com",
-           "fixupx.com", "www.fixupx.com", "fxtwitter.com", "www.fxtwitter.com"}
+# Accept only known X/Twitter embed frontends. Every accepted alias is normalized
+# to x.com before metadata lookup or yt-dlp, so no requests go to user-supplied hosts.
+X_HOSTS = {
+    "x.com", "www.x.com", "mobile.x.com",
+    "twitter.com", "www.twitter.com", "mobile.twitter.com",
+    "fixupx.com", "www.fixupx.com",
+    "fxtwitter.com", "www.fxtwitter.com",
+    "fixvx.com", "www.fixvx.com", "vxtwitter.com", "www.vxtwitter.com",
+    "twittpr.com", "www.twittpr.com",
+    "pxtwitter.com", "www.pxtwitter.com",  # Legacy FixTweet domain.
+}
+# FxEmbed also provides text/gallery/direct-media/instant-view subdomains.
+# Their post URLs have the same ID layout; normalize them to the same post.
+X_HOSTS.update(
+    f"{prefix}.{domain}"
+    for domain in ("fxtwitter.com", "fixupx.com")
+    for prefix in ("g", "t", "i", "d", "dl", "m", "o")
+)
 TIKTOK_HOSTS = {"tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com", "vt.tiktok.com"}
 
 

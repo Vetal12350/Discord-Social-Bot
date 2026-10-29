@@ -5,6 +5,7 @@ A self-hosted Discord bot that reposts supported social media links with downloa
 ## Features
 
 - Reposts supported X/Twitter and TikTok content to Discord.
+- Recognizes X embed-link aliases (`fixvx.com`, `vxtwitter.com`, `fxtwitter.com`, `fixupx.com`, `twittpr.com`, legacy `pxtwitter.com`) and FxEmbed gallery/text/instant-view variants, treating them as the same original X post. Only known domains are accepted.
 - Sends compatible MP4 files without unnecessary transcoding.
 - Processes short animations into Discord-friendly animated WebP/GIF where possible; leaves the original link when conversion fails.
 - Optional translation of post text into Russian (via an external translation service).
