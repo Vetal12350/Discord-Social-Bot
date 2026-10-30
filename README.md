@@ -107,6 +107,8 @@ See [troubleshooting (Russian)](docs/TROUBLESHOOTING_RU.md) for permissions, FFm
 - The included GitHub Actions workflow checks syntax, imports and existing URL parsing tests. These are not live end-to-end Discord integration tests.
 - The working Altare animation subprocess fix is included in `animation.py` and `media.py`.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) to report issues or propose changes. Issue templates are available for bug reports and feature requests.
+
 ## License
 
 Licensed under the [MIT License](LICENSE). Copyright (c) 2026 [Vetal12350](https://github.com/Vetal12350). Third-party components and platforms retain their own terms.
