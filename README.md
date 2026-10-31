@@ -1,5 +1,7 @@
 # Discord Social Bot
 
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/Vetal12350/badge.svg)](https://hub.xerj.org/contributors/Vetal12350)
+
 **Languages:** [English](README.md) · [Русский / Russian](README.ru.md)
 
 A self-hosted, open-source Discord bot that reposts supported **X/Twitter** and **TikTok** links with media, optional Russian translation and configurable webhook reposting.
