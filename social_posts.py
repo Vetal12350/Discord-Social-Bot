@@ -115,6 +115,52 @@ def x_caption_known_empty(status: dict) -> bool:
         return False
 
 
+
+def x_original_text(status: dict) -> str:
+    """Recover a missing display caption from FxTwitter raw_text media facets.
+
+    X's raw_text may contain t.co *media* links, which are not user captions.
+    Fail closed on malformed offsets rather than turning media URLs into text.
+    Facet offsets use UTF-16 code units; Python string slices do not.
+    """
+    displayed = normalize_text(status.get('text')) or normalize_text(status.get('full_text'))
+    if displayed:
+        return displayed
+    raw = status.get('raw_text')
+    if not isinstance(raw, dict) or not isinstance(raw.get('text'), str):
+        return ''
+    facets = raw.get('facets')
+    if not isinstance(facets, list) or not facets:
+        return ''
+    try:
+        encoded = raw['text'].encode('utf-16-le')
+        spans = []
+        for facet in facets:
+            if not isinstance(facet, dict):
+                return ''
+            if facet.get('type') != 'media':
+                continue
+            indices = facet.get('indices')
+            if (not isinstance(indices, list) or len(indices) != 2
+                    or any(type(i) is not int for i in indices)):
+                return ''
+            start, end = indices
+            if not 0 <= start < end <= len(encoded) // 2:
+                return ''
+            spans.append((start * 2, end * 2))
+        if not spans:
+            return ''
+        boundary = len(encoded)
+        for start, end in sorted(spans, reverse=True):
+            if end > boundary:
+                return ''
+            encoded = encoded[:start] + encoded[end:]
+            boundary = start
+        return normalize_text(encoded.decode('utf-16-le'))
+    except UnicodeError:
+        return ''
+
+
 def parse_x_data(data: dict) -> SocialPost | None:
     """Accept FxTwitter v2 `status` or legacy v1 `tweet` schema."""
     if not isinstance(data, dict) or data.get('code', 200) not in (200, '200'):
@@ -122,7 +168,7 @@ def parse_x_data(data: dict) -> SocialPost | None:
     status = data.get('status') or data.get('tweet')
     if not isinstance(status, dict) or status.get('type') == 'tombstone':
         return None
-    original = normalize_text(status.get('text'))
+    original = x_original_text(status)
     user = status.get('author') if isinstance(status.get('author'), dict) else {}
     if user.get('protected') is True:
         return None
