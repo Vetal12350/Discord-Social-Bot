@@ -85,6 +85,8 @@ Look for `Connected to Discord` in the logs, then try a public X/Twitter post an
 | Variable | Description |
 | --- | --- |
 | `DISCORD_TOKEN` | **Required** bot token from Discord Developer Portal. Legacy `DISCORD_BOT_TOKEN` is supported; use one. |
+| `SOURCE_MESSAGE_ACTION` | X and TikTok source-message behavior after a **confirmed** webhook repost: `delete` (legacy, strict completeness checks), `keep_link` (preserve clickable URL, suppress Discord embed), or `keep_all` (never modify original). Used in webhook mode; `delete`/`keep_link` require Manage Messages. |
+| `REPOST_FAILURE_NOTICE` | `false` by default: failed reposts quietly preserve the original message and native embed. Set `true` to send extra failure replies. |
 | `REPOST_MODE` | `webhook` (default) or `reply`. |
 | `TRANSLATE_ENABLED` | `true` / `false` — attempt to translate captions to Russian. |
 | `TEST_GUILD_ID` | Optional Discord server ID for faster guild-scoped slash-command sync; blank uses global sync. |
