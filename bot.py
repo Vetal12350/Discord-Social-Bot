@@ -249,6 +249,16 @@ class VideoBot(discord.Client):
                 except Exception as exc:
                     log.warning('Post metadata unavailable (%s)', type(exc).__name__)
                     post = None
+                # Log only caption availability, never the caption or source URL.
+                # This distinguishes a missing upstream description from a
+                # successful translation that previously replaced the original.
+                if post:
+                    log.info('caption_metadata platform=%s original_chars=%d translated_chars=%d '
+                             'media=%s empty_confirmed=%s',
+                             post.platform, len(post.original),
+                             len(post.translation or ''), post.has_media, post.caption_known_empty)
+                else:
+                    log.info('caption_metadata unavailable')
                 # One cache includes metadata and its protected Russian translation.
                 remember(self.post_cache, key, (time.monotonic(), post), 100)
                 return post

@@ -32,16 +32,35 @@ def clip(text: str, limit: int) -> str:
 
 
 def caption(post, *, translate: bool) -> tuple[str, bool]:
-    """One final caption; never display a source as if it were a translation."""
-    text = post.original
+    """Always preserve the source caption; append a translation only if it fits.
+
+    This function is shared by X and TikTok. A successful translation must
+    never replace the original text or erase it when Discord's 2000 UTF-16
+    unit message limit is reached.
+    """
+    original = post.original.strip()
+    if not original:
+        return '', True  # No empty labels and never synthesize a source caption.
+
+    escaped = discord.utils.escape_markdown(original, ignore_links=True)
+    translated = ''
     if (translate and not post.language.startswith('ru') and post.translation
-            and preserves_tokens(post.original, post.translation)):
-        text = post.translation
-    # Keep social handles/URLs readable. Discord pings are disabled in the request.
-    if not text.strip():
-        return '', True
-    rendered = CAPTION_HEADING + discord.utils.escape_markdown(text, ignore_links=True)
-    return clip(rendered, 2000), units(rendered) <= 2000
+            and post.translation.strip().casefold() != original.casefold()
+            and preserves_tokens(original, post.translation)):
+        translated = discord.utils.escape_markdown(post.translation.strip(), ignore_links=True)
+
+    heading = '**Оригинал:**\n' if translated else CAPTION_HEADING
+    main = heading + escaped
+    if units(main) > 2000:
+        return clip(main, 2000), False
+
+    if translated:
+        both = main + '\n\n**Перевод:**\n' + translated
+        if units(both) <= 2000:
+            return both, True
+        # Prefer an intact original to a clipped or partial translation.
+        return CAPTION_HEADING + escaped, True
+    return main, True
 
 
 def identity(author) -> tuple[str, str]:
