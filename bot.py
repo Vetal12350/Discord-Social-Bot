@@ -319,11 +319,12 @@ class VideoBot(discord.Client):
             raise WebhookFailure('Медиа больше лимита загрузки; исходное сообщение сохранено.') from exc
         except (RuntimeError, OSError, ValueError, TimeoutError, aiohttp.ClientError) as exc:
             raise WebhookFailure('Не удалось подготовить пересылку; исходное сообщение сохранено.', uncertain=sending) from exc
-        # A delete failure must never cause a second webhook send.
+        # Never resend the webhook if deleting/suppressing the source fails.
         try:
             await delete_source_if_safe(message, source, receipt,
                                         media_complete=post.media_complete, text_complete=text_complete,
-                                        caption_available=bool(post.original) or post.caption_known_empty)
+                                        caption_available=bool(post.original) or post.caption_known_empty,
+                                        action=self.config.source_message_action)
         except (discord.HTTPException, aiohttp.ClientError, OSError, TimeoutError) as exc:
             log.info('Repost sent; original retained (%s)', type(exc).__name__)
 
@@ -371,7 +372,9 @@ class VideoBot(discord.Client):
                         log.info('Webhook repost incomplete (uncertain=%s)', exc.uncertain)
                         log.info('delete_source result=skipped reason=webhook_unconfirmed detail=repost_failed '
                                  'message_id=%s channel_id=%s', message.id, message.channel.id)
-                        if not exc.uncertain:
+                        # Leave Discord's existing X/TikTok embed untouched by default:
+                        # otherwise failed downloads produce distracting duplicate notices.
+                        if self.config.repost_failure_notice and not exc.uncertain:
                             try:
                                 await send(content=str(exc) + '\n<' + source + '>', allowed_mentions=NO_MENTIONS)
                             except (discord.HTTPException, aiohttp.ClientError, OSError, TimeoutError):

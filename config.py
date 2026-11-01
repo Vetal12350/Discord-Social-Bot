@@ -20,6 +20,8 @@ class Config:
     translate: bool = True
     contact_email: str = ''
     repost_mode: str = 'webhook'
+    source_message_action: str = 'delete'
+    repost_failure_notice: bool = False
 
     @classmethod
     def from_env(cls):
@@ -35,9 +37,16 @@ class Config:
         mode = os.getenv('REPOST_MODE', 'webhook').strip().lower()
         if mode not in {'webhook', 'reply'}:
             raise ValueError('REPOST_MODE: используйте webhook или reply')
+        action = os.getenv('SOURCE_MESSAGE_ACTION', 'delete').strip().lower()
+        if action not in {'delete', 'keep_link', 'keep_all'}:
+            raise ValueError('SOURCE_MESSAGE_ACTION: используйте delete, keep_link или keep_all')
+        notice = os.getenv('REPOST_FAILURE_NOTICE', 'false').strip().lower()
+        if notice not in {'true', 'false', '1', '0', 'yes', 'no'}:
+            raise ValueError('REPOST_FAILURE_NOTICE: используйте true или false')
         if email and (len(email) > 254 or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email)):
             raise ValueError('MYMEMORY_EMAIL: неверный формат email')
         return cls(token, snowflake(guild, 'TEST_GUILD_ID') if guild else None,
                    frozenset(snowflake(v.strip(), 'ALLOWED_CHANNEL_IDS')
                              for v in channels.split(',') if v.strip()),
-                   translate in {'true', '1', 'yes'}, email, mode)
+                   translate in {'true', '1', 'yes'}, email, mode, action,
+                   notice in {'true', '1', 'yes'})

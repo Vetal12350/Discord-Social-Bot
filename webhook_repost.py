@@ -191,18 +191,34 @@ class WebhookPoster:
 
 
 async def delete_source_if_safe(message, source, receipt, *, media_complete: bool,
-                                text_complete: bool, caption_available: bool) -> bool:
-    def record(reason, detail='', *, result='skipped', status=None, code=None):
-        log.info('delete_source result=%s reason=%s detail=%s message_id=%s channel_id=%s status=%s code=%s',
-                 result, reason, detail, message.id, message.channel.id, status, code)
+                                text_complete: bool, caption_available: bool,
+                                action: str = 'delete') -> bool:
+    """Safely delete or suppress embeds only after verified webhook delivery.
 
-    if not media_complete:
+    Suppressing embeds is reversible and keeps the clickable source URL. Unlike
+    deletion, it may proceed with unverified caption/media completeness (not
+    with an unconfirmed uploaded attachment). This matters for TikTok, whose
+    metadata often cannot confirm a full caption before downloading a video.
+    """
+    if action not in {'delete', 'keep_link', 'keep_all'}:
+        raise ValueError('Unknown source-message action')
+    if action == 'keep_all':
+        return False
+
+    def record(reason, detail='', *, result='skipped', status=None, code=None):
+        log.info('source_action action=%s result=%s reason=%s detail=%s '
+                 'message_id=%s channel_id=%s status=%s code=%s',
+                 action, result, reason, detail, message.id, message.channel.id, status, code)
+
+    # Deletion is irreversible: retain the original whenever we cannot prove
+    # all media and text from the source made it into the webhook repost.
+    if action == 'delete' and not media_complete:
         record('incomplete_media')
         return False
     if not text_complete:
         record('incomplete_text', 'caption_truncated')
         return False
-    if not caption_available:
+    if action == 'delete' and not caption_available:
         record('caption_unavailable', 'empty_caption_not_confirmed')
         return False
     if not receipt.media_confirmed:
@@ -217,7 +233,9 @@ async def delete_source_if_safe(message, source, receipt, *, media_complete: boo
         missing = ','.join(name for name in ('manage_messages', 'read_message_history') if not getattr(permissions, name))
         record('missing_permissions', missing)
         return False
-    # Re-read immediately before deletion: user may have edited/attached content while downloading.
+
+    # Re-read just before modifying the message: the author may have edited
+    # the text or attached files while the media was downloading.
     stage = 'fetch_message'
     try:
         current = await message.channel.fetch_message(message.id)
@@ -228,11 +246,16 @@ async def delete_source_if_safe(message, source, receipt, *, media_complete: boo
         if issue:
             record(*issue)
             return False
-        stage = 'delete_message'
-        await current.delete()
+        if action == 'keep_link':
+            stage = 'suppress_embeds'
+            await current.edit(suppress=True)
+            record('confirmed', result='suppressed')
+        else:
+            stage = 'delete_message'
+            await current.delete()
+            record('confirmed', result='deleted')
     except (discord.HTTPException, aiohttp.ClientError, OSError, TimeoutError) as exc:
         record('discord_api_error', stage + ':' + type(exc).__name__,
                status=getattr(exc, 'status', None), code=getattr(exc, 'code', None))
         return False
-    record('confirmed', result='deleted')
     return True
