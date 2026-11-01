@@ -30,14 +30,14 @@ class TestSourceActions(unittest.IsolatedAsyncioTestCase):
                 text_complete=True, caption_available=False, action='keep_link')
             self.assertTrue(success)
             original.edit.assert_awaited_once_with(suppress=True)
-            original.delete.assert_not_await()
+            original.delete.assert_not_awaited()
             msg, original = make_message(link)
             success = await delete_source_if_safe(
                 msg, link, Receipt(55, True), media_complete=False,
                 text_complete=True, caption_available=False, action='delete')
             self.assertFalse(success)
-            original.delete.assert_not_await()
-            original.edit.assert_not_await()
+            original.delete.assert_not_awaited()
+            original.edit.assert_not_awaited()
 
     async def test_failures_keep_original(self):
         link = 'https://www.tiktok.com/@a/video/7123456789012345678'
@@ -45,13 +45,13 @@ class TestSourceActions(unittest.IsolatedAsyncioTestCase):
         await delete_source_if_safe(
             msg, link, Receipt(55, False), media_complete=True,
             text_complete=True, caption_available=True, action='keep_link')
-        original.edit.assert_not_await()
+        original.edit.assert_not_awaited()
         msg, original = make_message(link)
         msg.content = 'see ' + link
         await delete_source_if_safe(
             msg, link, Receipt(55, True), media_complete=True,
             text_complete=True, caption_available=True, action='keep_link')
-        original.edit.assert_not_await()
+        original.edit.assert_not_awaited()
 
     async def test_keep_all_no_edits(self):
         link = 'https://x.com/a/status/2116393850717737216'
@@ -59,8 +59,8 @@ class TestSourceActions(unittest.IsolatedAsyncioTestCase):
         await delete_source_if_safe(
             msg, link, Receipt(55, True), media_complete=True,
             text_complete=True, caption_available=True, action='keep_all')
-        original.edit.assert_not_await()
-        original.delete.assert_not_await()
+        original.edit.assert_not_awaited()
+        original.delete.assert_not_awaited()
 
     def test_empty_captions(self):
         for platform in ('TikTok', 'X / Twitter'):
