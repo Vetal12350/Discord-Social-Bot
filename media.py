@@ -56,7 +56,7 @@ def child_environment(*, python: bool = False, network: bool = False) -> dict[st
                    if key.upper() in allowed}
     if python:
         roots = []
-        for package in ('psutil', 'PIL', 'aiohttp', 'yt_dlp'):
+        for package in ('psutil', 'PIL', 'aiohttp', 'yt_dlp', 'curl_cffi'):
             spec = find_spec(package)
             if spec is None or not spec.origin:
                 continue
