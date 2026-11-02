@@ -107,7 +107,7 @@ class CurlGuardTests(unittest.TestCase):
 
         with patch('browser_http.socket.getaddrinfo', return_value=PUBLIC_DNS) as dns:
             with self.assertRaises(OSError):
-                guarded_curl_request(request, object(), 'GET',
+                guarded_curl_request(request, SimpleNamespace(curl_options={}), 'GET',
                                      'https://vt.tiktok.com/ABC',
                                      resolve_option='PIN')
         self.assertEqual(calls, ['https://vt.tiktok.com/ABC'])
