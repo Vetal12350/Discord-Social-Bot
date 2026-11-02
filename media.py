@@ -73,6 +73,26 @@ class MediaTooLarge(RuntimeError):
     pass
 
 
+def parse_worker_output(stdout_path: Path, *, download: bool) -> dict:
+    """Require JSON for metadata, not for an already verified media artifact.
+
+    Successful download workers may produce empty/unparseable stdout while
+    still writing a valid MP4. Callers MUST verify the file's existence,
+    size and codecs before sending it; metadata mode always requires JSON.
+    """
+    if download:
+        return {}  # Download completion is confirmed by the MP4 validation.
+    try:
+        result = json.loads(stdout_path.read_text(encoding='utf-8'))
+    except (ValueError, UnicodeError) as exc:
+        log.info('media_worker_output_invalid mode=metadata reason=%s',
+                 type(exc).__name__)
+        raise RuntimeError('Media worker returned invalid metadata') from None
+    if not isinstance(result, dict):
+        raise RuntimeError('Media worker returned invalid metadata')
+    return result
+
+
 async def download_image(session, url: str, destination: Path, limit: int) -> Path:
     """Bounded image download; no decoding, provider filenames or HTML attachments."""
     async with asyncio.timeout(60):
@@ -206,5 +226,4 @@ async def _run_media(url: str, directory: Path, *, download: bool,
                 close_job()
     if stdout_path.stat().st_size > 1024 * 1024:
         raise RuntimeError('Metadata too large')
-    data = json.loads(stdout_path.read_text(encoding='utf-8'))
-    return data if isinstance(data, dict) else {}
+    return parse_worker_output(stdout_path, download=download)
