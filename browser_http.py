@@ -62,10 +62,13 @@ def guarded_curl_request(original_request, session, method, url, *,
         # The native request must not re-resolve a hostname between checking
         # DNS and connecting. No proxy or automatic libcurl redirect may bypass
         # the pinning/allowlist above.
-        options = dict(kwargs.get('curl_options') or {})
-        options[resolve_option] = [f'{host}:443:{ip}']
+        # curl_cffi 0.17.0 accepts curl_options on Session construction,
+        # but NOT on Session.request().  The request method reads the mutable
+        # session.curl_options for each request, including streaming requests.
+        # Pin the vetted address there before making the native request.
+        session.curl_options[resolve_option] = [f'{host}:443:{ip}']
         request_kwargs = dict(kwargs, allow_redirects=False, max_redirects=0,
-                              curl_options=options, proxy='', proxies={})
+                              proxy='', proxies={})
         response = original_request(session, method, url, **request_kwargs)
         if response.status_code not in {301, 302, 303, 307, 308}:
             return response
