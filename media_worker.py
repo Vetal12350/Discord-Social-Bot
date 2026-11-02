@@ -58,10 +58,35 @@ def main():
         'description', 'title', 'uploader', 'uploader_id', 'id')}, ensure_ascii=True))
 
 
+def safe_failure_reason(exc: Exception) -> str:
+    """Bounded public error category, never raw yt-dlp text or media URLs."""
+    kind = type(exc).__name__
+    if kind == 'DownloadError':
+        # Do not emit the error message: it can contain signed media URLs.
+        message = str(exc).lower()
+        if 'requested format is not available' in message or 'format is not available' in message:
+            return 'format_unavailable'
+        if 'http error 403' in message or '403 forbidden' in message:
+            return 'http_403'
+        if 'http error 429' in message or 'too many requests' in message:
+            return 'http_429'
+        if 'login' in message or 'captcha' in message or 'challenge' in message:
+            return 'access_challenge'
+        return 'extractor_failed'
+    if kind in {'TimeoutError', 'ConnectTimeout', 'ReadTimeout'}:
+        return 'network_timeout'
+    if kind in {'HTTPError', 'URLError'}:
+        return 'network_rejected'
+    if kind in {'OSError', 'PermissionError'}:
+        return 'network_or_policy_error'
+    return 'worker_error'
+
+
 if __name__ == '__main__':
     try:
         main()
-    except Exception:
+    except Exception as exc:
         # Providers may include signed URLs or captions in exception text.
-        print('Public media unavailable or blocked', file=sys.stderr)
+        # Emit only a fixed allowlisted diagnostic token, never exception text.
+        print('media_worker_reason=' + safe_failure_reason(exc), file=sys.stderr)
         raise SystemExit(1)
