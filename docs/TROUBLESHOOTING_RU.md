@@ -18,6 +18,34 @@
 - Ссылка должна быть на поддерживаемую публичную публикацию X/Twitter или TikTok. Произвольные сайты бот не обслуживает.
 - Срабатывает защита от высокой нагрузки и частых запросов. Не отправляй много ссылок подряд; повтори позже.
 
+## TikTok: браузерная загрузка на VPS
+
+Для TikTok нужен `curl_cffi==0.17.0` (устанавливается из
+`requirements.txt`). После обновления зависимостей перезапусти
+**только** `discord-social-bot.service`. Для X продолжает действовать
+исходный загрузчик на `urllib`.
+
+Изолированный TikTok-загрузчик запрашивает только разрешённые HTTPS
+ресурсы. Каждое перенаправление проверяется; DNS разрешается заново
+перед запросом, запрещаются локальные/частные IP; libcurl получает
+закреплённый проверенный IP через `CURLOPT_RESOLVE`.
+Это необходимо, потому что системный аудит Python не видит
+нативные соединения `curl_cffi`.
+
+**Проверка после обновления:**
+
+```bash
+sudo -u socialbot /opt/discord-social-bot/venv/bin/python -c \
+  'import yt_dlp, curl_cffi; print("TikTok browser TLS ready", curl_cffi.__version__)'
+sudo journalctl -u discord-social-bot.service --since "5 minutes ago" --no-pager -o cat \
+  | grep -Ei 'caption_metadata|direct_mp4|media_worker_failure|webhook_confirmation|repost_failure|source_action'
+```
+
+При неудачной загрузке исходное сообщение остаётся нетронутым.
+Если сообщение содержит только обычное превью TikTok, проверь
+категорию `media_worker_failure` в журнале.
+Не устанавливай cookies или общедоступные прокси в бота.
+
 ## TikTok не распознаётся или остаётся только стандартное превью
 
 Короткие адреса `vt.tiktok.com`, `vm.tiktok.com` и прямые ссылки на
