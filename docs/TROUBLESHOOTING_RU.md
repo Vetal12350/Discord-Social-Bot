@@ -18,6 +18,34 @@
 - Ссылка должна быть на поддерживаемую публичную публикацию X/Twitter или TikTok. Произвольные сайты бот не обслуживает.
 - Срабатывает защита от высокой нагрузки и частых запросов. Не отправляй много ссылок подряд; повтори позже.
 
+## TikTok не распознаётся или остаётся только стандартное превью
+
+Короткие адреса `vt.tiktok.com`, `vm.tiktok.com` и прямые ссылки на
+`www.tiktok.com/@user/video/123...` поддерживаются. Если короткий URL
+не раскрывается (403/редирект), бот пробует извлечь сведения через
+`yt-dlp`, не обращаясь к сторонним небезопасным сайтам.
+
+Если в Discord виден только стандартный TikTok-плеер, но нет
+пересылки от Social Bot, это **не обязательно** ошибка распознавания.
+При `REPOST_FAILURE_NOTICE=false` бот намеренно не публикует ошибку в чат.
+Проверь свежие безопасные диагностические сообщения:
+
+```bash
+sudo journalctl -u discord-social-bot.service --since "15 minutes ago" --no-pager \\
+  | grep -Ei 'TikTok redirect|TikTok metadata|caption_metadata|repost_failure|Webhook repost incomplete|webhook_confirmation'
+```
+
+- `TikTok metadata route=shortlink_fallback` — раскрытие короткой ссылки не удалось, пробуется резервный путь.
+- `TikTok metadata result=unavailable` — метаданные не получены даже после попытки восстановления.
+- `caption_metadata platform=TikTok` — текст публикации распознан (число символов указано в журнале).
+- `repost_failure stage=prepare` — ошибка скачивания или подготовки медиа.
+- `repost_failure stage=webhook` — ошибка при отправке медиа в Discord.
+- `Webhook repost incomplete ... reason=...` — уточнённая причина без раскрытия приватных данных.
+
+Не отключай защиту URL и не вставляй токены, cookies или личные
+ссылки на вебхуки в отчёты. При блокировке скачивания TikTok
+резервный путь не гарантирует загрузку каждого видео.
+
 ## Webhook не работает или исходное сообщение не удалилось
 
 - Для `REPOST_MODE=webhook` нужно **Manage Webhooks**; для удаления сообщений — **Manage Messages**.
