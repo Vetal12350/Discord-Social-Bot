@@ -23,7 +23,7 @@ from media_cache import MediaCache
 
 MAX_SECONDS = 30
 MAX_SIDE = 480
-MAX_FPS = 12
+MAX_FPS = 15
 MAX_FRAMES = MAX_SECONDS * MAX_FPS + 2
 CPU_SECONDS = 8
 TOTAL_WALL_SECONDS = 60
@@ -237,9 +237,9 @@ def inspect_animation(path: Path, expected_duration: float, expected_width: int,
             if not isinstance(delay, (int, float)) or delay < 1000 / 60 - 1:
                 raise AnimationError(f'Invalid/high-FPS frame duration={delay}', reason='invalid_timing')
             duration += delay / 1000
-        # Keep the previous two-frame rounding tolerance for ordinary GIFs.
-        # Tiny animations need a tighter check: 80 -> 120 ms would change their speed.
-        tolerance = max(0.01, expected_duration * 0.05) if expected_duration < 0.25 else 2 / 12
+        # Match tolerance to highest target FPS, while preserving the stricter
+        # sub-250ms timing check needed for short animations.
+        tolerance = max(0.01, expected_duration * 0.05) if expected_duration < 0.25 else 2 / MAX_FPS
         if not changed or abs(duration - expected_duration) > tolerance:
             raise AnimationError(f'Animation timing changed={changed} duration={duration:.6f} '
                                  f'expected={expected_duration:.6f} tolerance={tolerance:.6f}', reason='invalid_timing')
@@ -259,8 +259,10 @@ class EncodingProfile:
 
 
 PROFILES = (
-    EncodingProfile('webp_480_12_q70', False, 480, 12, 70),
-    EncodingProfile('webp_320_10_q65', False, 320, 10, 65),
+    # Prefer a sharper, smoother animation without increasing upload bounds.
+    # If size/CPU/time exceeds the existing limits, retry at lower settings.
+    EncodingProfile('webp_480_15_q85', False, 480, 15, 85),
+    EncodingProfile('webp_320_10_q75', False, 320, 10, 75),
 )
 GIF_PROFILE = EncodingProfile('gif_320_10_c96', True, 320, 10, 0, 96)
 
