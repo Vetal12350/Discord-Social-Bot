@@ -4,8 +4,9 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from link_utils import is_supported_url
+from link_utils import TIKTOK_HOSTS, is_supported_url
 from safe_http import allowed_url, public_ip
 
 
@@ -30,10 +31,23 @@ def main():
     from yt_dlp.networking._urllib import UrllibRH
 
     plugin_dirs.value = []
+    is_tiktok = urlsplit(url).hostname in TIKTOK_HOSTS
+
+    if is_tiktok:
+        # The Python audit hook cannot see native libcurl socket connections.
+        # Explicitly pin each resolved public IP and validate every redirect.
+        from browser_http import enable_guarded_browser_requests
+        enable_guarded_browser_requests()
+        from yt_dlp.networking._curlcffi import CurlCFFIRH
+        from yt_dlp.networking.impersonate import ImpersonateTarget
+        browser_target = ImpersonateTarget.from_str('chrome')
 
     class SafeYoutubeDL(yt_dlp.YoutubeDL):
         def build_request_director(self, handlers, preferences=None):
-            return super().build_request_director([UrllibRH], preferences=[])
+            # Keep the original urllib-only policy for X. TikTok can use
+            # browser TLS, with native requests guarded in browser_http.
+            safe_handlers = [UrllibRH, CurlCFFIRH] if is_tiktok else [UrllibRH]
+            return super().build_request_director(safe_handlers, preferences=[])
 
     sys.addaudithook(network_guard)
     options = {
@@ -50,6 +64,8 @@ def main():
         'overwrites': False, 'writethumbnail': False, 'writeinfojson': False,
         'postprocessors': [], 'extract_flat': False,
     }
+    if is_tiktok:
+        options['impersonate'] = browser_target
     with SafeYoutubeDL(options) as downloader:
         info = downloader.extract_info(url, download=mode == 'download')
     if not isinstance(info, dict) or info.get('_type') in {'playlist', 'multi_video'}:

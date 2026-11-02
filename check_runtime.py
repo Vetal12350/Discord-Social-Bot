@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 
-PACKAGES = ('discord.py', 'aiohttp', 'python-dotenv', 'yt-dlp', 'langdetect', 'Pillow', 'psutil')
+PACKAGES = ('discord.py', 'aiohttp', 'python-dotenv', 'yt-dlp', 'langdetect', 'Pillow', 'psutil', 'curl_cffi')
 
 
 def check() -> int:
@@ -27,6 +27,11 @@ def check() -> int:
         return 1
     try:
         import bot  # noqa: F401 -- verifies the full runtime import graph, without running main().
+        from yt_dlp.networking._curlcffi import CurlCFFIRH  # noqa: F401 -- TikTok needs Chrome TLS
+        from curl_cffi import CurlOpt
+        if not hasattr(CurlOpt, 'RESOLVE'):
+            print('ERROR: curl_cffi cannot pin DNS addresses')
+            return 1
         from PIL import features
         if not features.check('webp'):
             print('ERROR: Pillow has no WebP support')
