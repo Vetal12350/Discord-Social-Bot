@@ -158,9 +158,16 @@ class VideoBot(discord.Client):
                     return media, info
             except MediaTooLarge:
                 raise
-            except (RuntimeError, OSError, ValueError, TimeoutError, aiohttp.ClientError):
-                pass  # Expired URL, bad container or incompatible codec: one bounded extraction attempt.
+            except (RuntimeError, OSError, ValueError, TimeoutError, aiohttp.ClientError) as exc:
+                # Never emit an exception message: it may contain signed URLs.
+                log.info('direct_mp4_failed reason_type=%s; trying_media_worker',
+                         type(exc).__name__)
+            else:
+                # The file downloaded, but its codec was not compatible.
+                log.info('direct_mp4_failed reason_type=incompatible_codec; trying_media_worker')
             media.unlink(missing_ok=True)
+        else:
+            log.info('direct_mp4_skipped reason=no_direct_url')
         await run_media(source, folder, download=True, limit=limit)
         if not media.is_file() or media.stat().st_size == 0:
             raise RuntimeError('No public MP4 available')

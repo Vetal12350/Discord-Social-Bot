@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from importlib.util import find_spec
 import json
+import logging
 import os
 from pathlib import Path
 import sys
@@ -15,8 +16,29 @@ from safe_http import allowed_url
 from media_cache import MediaCache
 from process_limits import RSS_LIMIT, limit_process, under_pressure
 
+log = logging.getLogger(__name__)
 MAX_BYTES = 19 * 1024 * 1024
 worker_slot = asyncio.Semaphore(1)
+
+# Never log raw child stderr: yt-dlp and provider errors may include signed URLs.
+SAFE_MEDIA_WORKER_REASONS = frozenset({
+    'format_unavailable', 'http_403', 'http_429', 'access_challenge',
+    'extractor_failed', 'network_timeout', 'network_rejected',
+    'network_or_policy_error', 'worker_error',
+})
+
+
+def safe_worker_failure(stderr_path: Path) -> str:
+    """Read only our fixed allowlisted diagnostics, never provider text."""
+    try:
+        for line in stderr_path.read_text(encoding='utf-8', errors='replace').splitlines()[-8:]:
+            if line.startswith('media_worker_reason='):
+                reason = line.removeprefix('media_worker_reason=').strip()
+                if reason in SAFE_MEDIA_WORKER_REASONS:
+                    return reason
+    except OSError:
+        pass
+    return 'unclassified'
 
 
 def child_environment(*, python: bool = False, network: bool = False) -> dict[str, str]:
@@ -168,6 +190,10 @@ async def _run_media(url: str, directory: Path, *, download: bool,
                     except TimeoutError:
                         pass
                 if process.returncode:
+                    reason = safe_worker_failure(stderr_path)
+                    log.info('media_worker_failure mode=%s reason=%s exit_kind=%s',
+                             'download' if download else 'metadata', reason,
+                             'signal' if process.returncode < 0 else 'error')
                     raise RuntimeError('Public media unavailable or blocked')
         finally:
             if process.returncode is None:
