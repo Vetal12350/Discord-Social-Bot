@@ -38,6 +38,13 @@ sudo journalctl -u discord-social-bot.service --since "15 minutes ago" --no-page
 - `TikTok metadata route=shortlink_fallback` — раскрытие короткой ссылки не удалось, пробуется резервный путь.
 - `TikTok metadata result=unavailable` — метаданные не получены даже после попытки восстановления.
 - `caption_metadata platform=TikTok` — текст публикации распознан (число символов указано в журнале).
+- `direct_mp4_failed reason_type=...` — прямой MP4 не скачался либо несовместим; бот пробует изолированный загрузчик.
+- `media_worker_failure mode=download reason=...` — классифицированная ошибка загрузчика:
+  `format_unavailable` (нет совместимого MP4), `http_403`/`http_429`
+  (отказ сервиса/ограничение запросов), `access_challenge` (проверка доступа),
+  `extractor_failed` (источник/формат не поддержан), `network_or_policy_error`
+  (сеть или защита URL), `unclassified` (иная причина). Сообщение
+  об ошибке поставщика и подписанные URL в журнал не выводятся.
 - `repost_failure stage=prepare` — ошибка скачивания или подготовки медиа.
 - `repost_failure stage=webhook` — ошибка при отправке медиа в Discord.
 - `Webhook repost incomplete ... reason=...` — уточнённая причина без раскрытия приватных данных.
