@@ -272,6 +272,7 @@ class VideoBot(discord.Client):
             raise WebhookFailure('Для пересылки медиа нужно право Attach Files; оригинал сохранён.')
         content, text_complete = caption(post, translate=self.config.translate)
         sending = False
+        stage = 'prepare'
         try:
             async with asyncio.timeout(180):
                 async with self.media_lock:
@@ -315,6 +316,7 @@ class VideoBot(discord.Client):
                             raise WebhookFailure('У публикации нет доступного текста или медиа.')
                         files = [stack.enter_context(closing(discord.File(path, filename=path.name))) for path in paths]
                         sending = True
+                        stage = 'webhook'
                         receipt = await self.webhook_poster.execute(
                             self.http_session, webhook, parent_id, thread_id, message.channel.id,
                             message.author, content, files)
@@ -328,6 +330,8 @@ class VideoBot(discord.Client):
         except MediaTooLarge as exc:
             raise WebhookFailure('Медиа больше лимита загрузки; исходное сообщение сохранено.') from exc
         except (RuntimeError, OSError, ValueError, TimeoutError, aiohttp.ClientError) as exc:
+            # Never log signed media URLs, response bodies, tokens or post captions.
+            log.warning('repost_failure stage=%s error_type=%s', stage, type(exc).__name__)
             raise WebhookFailure('Не удалось подготовить пересылку; исходное сообщение сохранено.', uncertain=sending) from exc
         # Never resend the webhook if deleting/suppressing the source fails.
         try:
@@ -379,7 +383,10 @@ class VideoBot(discord.Client):
                         else:
                             await self.send_post(post, source, permissions, message.guild.filesize_limit, send)
                     except WebhookFailure as exc:
-                        log.info('Webhook repost incomplete (uncertain=%s)', exc.uncertain)
+                        # WebhookFailure messages are fixed, user-safe diagnostics.
+                        # Do not log post URLs, content or secret webhook credentials.
+                        log.info('Webhook repost incomplete (uncertain=%s reason=%s)',
+                                 exc.uncertain, str(exc))
                         log.info('delete_source result=skipped reason=webhook_unconfirmed detail=repost_failed '
                                  'message_id=%s channel_id=%s', message.id, message.channel.id)
                         # Leave Discord's existing X/TikTok embed untouched by default:

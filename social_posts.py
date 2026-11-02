@@ -440,27 +440,43 @@ async def tiktok_proxy_metadata(session, url: str) -> SocialPost | None:
 
 
 async def resolve_tiktok_url(session, url: str) -> str | None:
-    """Resolve only TikTok short links, validating every redirect before requesting."""
+    """Resolve TikTok short links through bounded first-party redirects only.
+
+    TikTok may use an intermediate /redirect or /login page on its own domain.
+    Those intermediate URLs are not public post URLs; the final destination
+    must still pass the strict link validator. Never follow off-site redirects.
+    """
     parsed = urlsplit(url)
     if parsed.hostname not in {'vm.tiktok.com', 'vt.tiktok.com'} and not parsed.path.startswith('/t/'):
         return url
+    if not is_supported_url(url):
+        return None
     try:
-        for _ in range(4):
+        for _ in range(6):
+            # Intermediates may be TikTok pages, but must never be attacker hosts.
             if not allowed_url(url) or urlsplit(url).hostname not in TIKTOK_HOSTS:
                 return None
             async with session.get(url, allow_redirects=False, timeout=REQUEST_TIMEOUT) as response:
                 if response.status in {301, 302, 303, 307, 308}:
-                    url = urljoin(url, response.headers.get('Location', ''))
-                    if not is_supported_url(url):
+                    location = response.headers.get('Location')
+                    if not location:
                         return None
-                elif response.status == 200 and is_supported_url(url):
-                    return url
+                    target = urljoin(url, location)
+                    parsed_target = urlsplit(target)
+                    if (not allowed_url(target) or parsed_target.hostname not in TIKTOK_HOSTS):
+                        log.info('TikTok redirect blocked (off-site or invalid destination)')
+                        return None
+                    url = target
+                elif response.status == 200:
+                    return url if is_supported_url(url) else None
                 else:
+                    log.info('TikTok redirect unavailable status=%d', response.status)
                     return None
+        log.info('TikTok redirect limit reached')
         return None
-    except (aiohttp.ClientError, TimeoutError, ValueError):
+    except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+        log.info('TikTok redirect unavailable error=%s', type(exc).__name__)
         return None
-
 
 async def fetch_social_post(session: aiohttp.ClientSession, url: str,
                             contact_email: str = '', *, translate: bool = True) -> SocialPost | None:
@@ -487,10 +503,26 @@ async def fetch_social_post(session: aiohttp.ClientSession, url: str,
                 post = replace(post, translation_unavailable=False)
         return post
 
-    # TikTok public metadata: try lightweight oEmbed, then yt-dlp metadata.
-    url = await resolve_tiktok_url(session, url)
-    if not url:
-        return None
+    # If the short URL cannot be expanded by the HTTP client (403, consent
+    # page, changed redirect path), yt-dlp gets a chance to resolve the
+    # *original validated TikTok URL* with its own supported extractor.
+    original_url = url
+    resolved = await resolve_tiktok_url(session, original_url)
+    if not resolved:
+        log.info('TikTok metadata route=shortlink_fallback')
+        metadata = await tiktok_ytdlp_metadata(original_url)
+        post = parse_tiktok_data(metadata or {}, original_url)
+        if not post:
+            log.info('TikTok metadata result=unavailable route=shortlink_fallback')
+            return None
+        if not translate:
+            return post
+        language = await asyncio.to_thread(detect_source_language, post.original)
+        if not language or language == 'ru':
+            return post
+        translated = await mymemory_translation(session, post.original, language, contact_email)
+        return replace(post, translation=translated, translation_unavailable=not bool(translated))
+    url = resolved
     oembed = await fetch_json(session, 'https://www.tiktok.com/oembed', params={'url': url})
     post = parse_tiktok_data(oembed or {}, url)
     if not post or not post.original or (post.has_video and not post.video_url):
@@ -513,6 +545,7 @@ async def fetch_social_post(session: aiohttp.ClientSession, url: str,
         else:
             post = extracted or post
     if not post:
+        log.info('TikTok metadata result=unavailable route=resolved')
         return None
     if not translate:
         return post
