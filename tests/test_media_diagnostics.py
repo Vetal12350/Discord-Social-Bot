@@ -27,10 +27,10 @@ class WorkerFailureTests(unittest.TestCase):
     def test_worker_log_read_does_not_return_unsafe_text(self):
         with tempfile.TemporaryDirectory() as temp:
             file = Path(temp) / 'worker.log'
-            file.write_text('ERROR: token=secret signed_url=abc\\n'
-                            'media_worker_reason=http_403\\n', encoding='utf-8')
+            file.write_text('ERROR: token=secret signed_url=abc\n'
+                            'media_worker_reason=http_403\n', encoding='utf-8')
             self.assertEqual(safe_worker_failure(file), 'http_403')
-            file.write_text('media_worker_reason=http_403&secret=abc\\n', encoding='utf-8')
+            file.write_text('media_worker_reason=http_403&secret=abc\n', encoding='utf-8')
             self.assertEqual(safe_worker_failure(file), 'unclassified')
 
     def test_worker_log_missing(self):
