@@ -10,6 +10,70 @@ from link_utils import TIKTOK_HOSTS, is_supported_url
 from safe_http import allowed_url, public_ip
 
 
+class NoMP4OutputError(RuntimeError):
+    """yt-dlp exited successfully without writing an actual MP4."""
+
+
+def ensure_mp4_output(folder: str) -> None:
+    """Do not report success for a size-skipped or missing download."""
+    output = Path(folder) / 'video.mp4'
+    if not output.is_file() or output.stat().st_size == 0:
+        raise NoMP4OutputError('No MP4 file produced')
+
+
+def select_bounded_mp4(ctx: dict, limit: int):
+    """Select one progressive H.264 MP4 whose reported size fits our cap.
+
+    yt-dlp's max_filesize may silently skip an oversized best format and
+    return success. Prefer the best *fitting* MP4 instead. Unknown-size
+    formats are a last resort, with the existing hard byte/time/RSS limits.
+    No DASH/HLS, separate audio, mergers, or external programs are allowed.
+    """
+    fitting, unknown = [], []
+    for fmt in ctx.get('formats', ()):
+        if not isinstance(fmt, dict) or fmt.get('ext') != 'mp4' or fmt.get('protocol') != 'https':
+            continue
+        video = fmt.get('vcodec')
+        audio = fmt.get('acodec')
+        if not isinstance(video, str) or not video.lower().startswith(('avc1', 'avc3', 'h264')):
+            continue
+        if audio is not None and audio != 'none' and not (
+            isinstance(audio, str) and audio.lower().startswith('mp4a')
+        ):
+            continue
+
+        exact = fmt.get('filesize')
+        approx = fmt.get('filesize_approx')
+        if type(exact) in (int, float) and 0 < exact < float('inf'):
+            if exact <= limit:
+                fitting.append(fmt)
+            continue
+        if type(approx) in (int, float) and 0 < approx < float('inf'):
+            # An approximate size can be optimistic. Reserve 10% headroom.
+            if approx <= limit * 0.9:
+                fitting.append(fmt)
+            continue
+        unknown.append(fmt)
+
+    def quality(fmt):
+        audio = fmt.get('acodec')
+        return (
+            bool(isinstance(audio, str) and audio.lower().startswith('mp4a')),
+            fmt.get('height') if type(fmt.get('height')) in (int, float) else 0,
+            fmt.get('width') if type(fmt.get('width')) in (int, float) else 0,
+            fmt.get('tbr') if type(fmt.get('tbr')) in (int, float) else 0,
+        )
+
+    if fitting:
+        yield max(fitting, key=quality)
+    elif unknown:
+        # Choose a moderate format to reduce risk of a size-skip when TikTok
+        # does not publish any size information.
+        moderate = [fmt for fmt in unknown
+                    if type(fmt.get('height')) in (int, float) and fmt['height'] <= 720]
+        yield max(moderate or unknown, key=quality)
+
+
 def network_guard(event, args):
     # urllib emits this for initial requests AND every redirect.
     if event == 'urllib.Request' and not allowed_url(args[0], media=True):
@@ -66,10 +130,14 @@ def main():
     }
     if is_tiktok:
         options['impersonate'] = browser_target
+        if mode == 'download':
+            options['format'] = lambda ctx: select_bounded_mp4(ctx, int(limit))
     with SafeYoutubeDL(options) as downloader:
         info = downloader.extract_info(url, download=mode == 'download')
     if not isinstance(info, dict) or info.get('_type') in {'playlist', 'multi_video'}:
         raise ValueError('Only single public videos supported')
+    if mode == 'download':
+        ensure_mp4_output(folder)
     print(json.dumps({k: info.get(k) for k in (
         'description', 'title', 'uploader', 'uploader_id', 'id')}, ensure_ascii=True))
 
@@ -77,6 +145,8 @@ def main():
 def safe_failure_reason(exc: Exception) -> str:
     """Bounded public error category, never raw yt-dlp text or media URLs."""
     kind = type(exc).__name__
+    if kind == 'NoMP4OutputError':
+        return 'no_mp4_output'
     if kind == 'DownloadError':
         # Do not emit the error message: it can contain signed media URLs.
         message = str(exc).lower()
