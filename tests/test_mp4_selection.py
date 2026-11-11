@@ -36,6 +36,30 @@ class BoundedMP4Tests(unittest.TestCase):
             list(select_bounded_mp4({'formats': [small, huge, good]}, LIMIT)),
             [good])
 
+    def test_real_tiktok_codec_labels_h264_aac_are_accepted(self):
+        # Live VPS output: format=mp4, protocol=https, video=h264,
+        # audio=aac. This used to yield FITTING_MP4: 0 despite 3
+        # progressive formats below the 19 MiB upload limit.
+        candidates = [
+            fmt(1024, size=int(10.77 * 1048576), video='h264', audio='aac'),
+            fmt(1024, size=int(12.04 * 1048576), video='h264', audio='aac'),
+            fmt(1024, size=int(15.36 * 1048576), video='h264', audio='aac'),
+            fmt(1024, size=int(26.98 * 1048576), video='h264', audio='aac'),
+            fmt(1024, size=int(10.19 * 1048576), video='h265', audio='none'),
+        ]
+        selected = list(select_bounded_mp4({'formats': candidates}, LIMIT))
+        self.assertEqual(len(selected), 1)
+        self.assertIn(selected[0], candidates[:3])
+        self.assertEqual(selected[0]['acodec'], 'aac')
+        self.assertEqual(selected[0]['vcodec'], 'h264')
+        self.assertLess(selected[0]['filesize'], LIMIT)
+
+    def test_raw_aac_preferred_to_no_audio(self):
+        mute = fmt(720, size=7 * 1048576, video='h264', audio='none')
+        sound = fmt(720, size=9 * 1048576, video='h264', audio='aac')
+        selected = list(select_bounded_mp4({'formats': [mute, sound]}, LIMIT))
+        self.assertEqual(selected, [sound])
+
     def test_approx_size_uses_10_percent_safety_margin(self):
         safe = fmt(480, approx=15 * 1024 * 1024)
         risky = fmt(720, approx=18 * 1024 * 1024)
