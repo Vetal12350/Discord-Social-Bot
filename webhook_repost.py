@@ -211,6 +211,7 @@ class WebhookPoster:
 
 async def delete_source_if_safe(message, source, receipt, *, media_complete: bool,
                                 text_complete: bool, caption_available: bool,
+                                translation_complete: bool = True,
                                 action: str = 'delete') -> bool:
     """Safely delete or suppress embeds only after verified webhook delivery.
 
@@ -239,6 +240,9 @@ async def delete_source_if_safe(message, source, receipt, *, media_complete: boo
         return False
     if action == 'delete' and not caption_available:
         record('caption_unavailable', 'empty_caption_not_confirmed')
+        return False
+    if action == 'delete' and not translation_complete:
+        record('translation_unavailable')
         return False
     if not receipt.media_confirmed:
         record('webhook_unconfirmed', receipt.confirmation_reason)

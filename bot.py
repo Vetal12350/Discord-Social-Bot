@@ -286,6 +286,7 @@ class VideoBot(discord.Client):
         if post.has_media and not permissions.attach_files:
             raise WebhookFailure('Для пересылки медиа нужно право Attach Files; оригинал сохранён.')
         content, text_complete = caption(post, translate=self.config.translate)
+        media_complete = post.media_complete
         sending = False
         stage = 'prepare'
         try:
@@ -304,7 +305,11 @@ class VideoBot(discord.Client):
                                      if post.is_gif else None)
                             cached_animation = video is not None
                             if video is None:
-                                video, _ = await self.prepare_video(post, source, folder, limit)
+                                video, info = await self.prepare_video(post, source, folder, limit)
+                                if post.platform == 'TikTok' and not info.audio_codecs:
+                                    # A fitting silent variant does not prove the
+                                    # source soundtrack was preserved.
+                                    media_complete = False
                             if post.is_gif and not cached_animation:
                                 animation, details = await convert_animation(video, folder, limit)
                                 video.unlink(missing_ok=True)
@@ -351,8 +356,9 @@ class VideoBot(discord.Client):
         # Never resend the webhook if deleting/suppressing the source fails.
         try:
             await delete_source_if_safe(message, source, receipt,
-                                        media_complete=post.media_complete, text_complete=text_complete,
+                                        media_complete=media_complete, text_complete=text_complete,
                                         caption_available=bool(post.original) or post.caption_known_empty,
+                                        translation_complete=not (self.config.translate and post.translation_unavailable),
                                         action=self.config.source_message_action)
         except (discord.HTTPException, aiohttp.ClientError, OSError, TimeoutError) as exc:
             log.info('Repost sent; original retained (%s)', type(exc).__name__)
