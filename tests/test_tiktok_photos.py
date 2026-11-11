@@ -88,7 +88,9 @@ class PhotoRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(post.platform, 'TikTok')
         self.assertEqual(post.image_urls, (SLIDE_A, SLIDE_B))
         self.assertFalse(post.has_video)
-        self.assertTrue(post.media_complete)
+        # The gallery photos are complete, but the original soundtrack isn't
+        # transferred. Never authorize deletion of the original post.
+        self.assertFalse(post.media_complete)
         self.assertEqual(post.original, 'Слайды #tag')
 
     async def test_no_photo_images_means_no_repost(self):
