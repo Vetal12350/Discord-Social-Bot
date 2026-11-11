@@ -28,6 +28,7 @@ except ImportError:
 from link_utils import X_HOSTS, TIKTOK_HOSTS, is_supported_url, to_embed_url
 from media import run_media
 from protected_text import mask_tokens, preserves_tokens, restore_tokens
+from tiktok_photos import fetch_tiktok_photo_post
 from safe_http import allowed_url
 
 log = logging.getLogger(__name__)
@@ -523,6 +524,35 @@ async def fetch_social_post(session: aiohttp.ClientSession, url: str,
         translated = await mymemory_translation(session, post.original, language, contact_email)
         return replace(post, translation=translated, translation_unavailable=not bool(translated))
     url = resolved
+    if '/photo/' in urlsplit(url).path:
+        # TikTok photo mode is a gallery, not an MP4. oEmbed typically returns
+        # only the cover, which must never be misrepresented as the full post.
+        # Read exactly the ordered imagePost list from the matching public post.
+        gallery = await fetch_tiktok_photo_post(session, url)
+        if not gallery:
+            log.info('TikTok photo gallery result=unavailable')
+            return None
+        original = normalize_text(gallery['description'])
+        post = SocialPost(
+            platform='TikTok',
+            author=normalize_text(gallery['author']) or 'Автор TikTok',
+            handle=normalize_text(gallery['handle']),
+            original=original, translation=None, has_media=True,
+            has_video=False, image_urls=gallery['image_urls'],
+            # The soundtrack is not copied: preserve the source when deletion
+            # is configured. keep_link can still suppress the preview safely.
+            media_complete=False, caption_known_empty=gallery['caption_known_empty'],
+        )
+        log.info('TikTok photo gallery result=complete slides=%d',
+                 len(post.image_urls))
+        if not translate or not original:
+            return post
+        language = await asyncio.to_thread(detect_source_language, original)
+        if not language or language == 'ru':
+            return replace(post, language=language or '')
+        translated = await mymemory_translation(session, original, language, contact_email)
+        return replace(post, language=language, translation=translated,
+                       translation_unavailable=not bool(translated))
     oembed = await fetch_json(session, 'https://www.tiktok.com/oembed', params={'url': url})
     post = parse_tiktok_data(oembed or {}, url)
     if not post or not post.original or (post.has_video and not post.video_url):
