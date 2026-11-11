@@ -21,6 +21,13 @@ def ensure_mp4_output(folder: str) -> None:
         raise NoMP4OutputError('No MP4 file produced')
 
 
+def is_aac_codec(value: object) -> bool:
+    """yt-dlp labels AAC as either 'aac' or an MP4 sample entry 'mp4a.*'."""
+    return isinstance(value, str) and (
+        value.lower() == 'aac' or value.lower().startswith('mp4a')
+    )
+
+
 def select_bounded_mp4(ctx: dict, limit: int):
     """Select one progressive H.264 MP4 whose reported size fits our cap.
 
@@ -37,9 +44,7 @@ def select_bounded_mp4(ctx: dict, limit: int):
         audio = fmt.get('acodec')
         if not isinstance(video, str) or not video.lower().startswith(('avc1', 'avc3', 'h264')):
             continue
-        if audio is not None and audio != 'none' and not (
-            isinstance(audio, str) and audio.lower().startswith('mp4a')
-        ):
+        if audio is not None and audio != 'none' and not is_aac_codec(audio):
             continue
 
         exact = fmt.get('filesize')
@@ -58,7 +63,7 @@ def select_bounded_mp4(ctx: dict, limit: int):
     def quality(fmt):
         audio = fmt.get('acodec')
         return (
-            bool(isinstance(audio, str) and audio.lower().startswith('mp4a')),
+            is_aac_codec(audio),
             fmt.get('height') if type(fmt.get('height')) in (int, float) else 0,
             fmt.get('width') if type(fmt.get('width')) in (int, float) else 0,
             fmt.get('tbr') if type(fmt.get('tbr')) in (int, float) else 0,
