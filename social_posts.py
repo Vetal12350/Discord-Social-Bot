@@ -539,7 +539,9 @@ async def fetch_social_post(session: aiohttp.ClientSession, url: str,
             handle=normalize_text(gallery['handle']),
             original=original, translation=None, has_media=True,
             has_video=False, image_urls=gallery['image_urls'],
-            media_complete=True, caption_known_empty=gallery['caption_known_empty'],
+            # The soundtrack is not copied: preserve the source when deletion
+            # is configured. keep_link can still suppress the preview safely.
+            media_complete=False, caption_known_empty=gallery['caption_known_empty'],
         )
         log.info('TikTok photo gallery result=complete slides=%d',
                  len(post.image_urls))
