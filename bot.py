@@ -16,7 +16,7 @@ from discord import app_commands
 from dotenv import load_dotenv
 
 from config import Config
-from link_utils import canonical_url, extract_urls, is_supported_url
+from link_utils import YOUTUBE_SHORTS_HOSTS, canonical_url, extract_urls, is_supported_url
 from media import MAX_BYTES, MediaTooLarge, download_image, download_mp4, run_media
 from media_cache import MediaCache
 from process_limits import under_pressure
@@ -99,7 +99,7 @@ class VideoBot(discord.Client):
         self.config = config or Config()
         self.tree = app_commands.CommandTree(self)
         self.tree.add_command(app_commands.Command(
-            name='video', description='Загрузить MP4 из публичного X/Twitter или TikTok',
+            name='video', description='Загрузить MP4 из X, TikTok или YouTube Shorts',
             callback=self.video))
         self.http_session: aiohttp.ClientSession | None = None
         self.metadata_slots = asyncio.Semaphore(2)
@@ -231,6 +231,14 @@ class VideoBot(discord.Client):
         await send(**payload, allowed_mentions=NO_MENTIONS)
 
     async def get_details(self, source: str) -> SocialPost | None:
+        # Download-only Shorts: do not fetch captions, authors, thumbnails,
+        # comments or translations.  The original URL remains in Discord.
+        from urllib.parse import urlsplit
+        if urlsplit(source).hostname in YOUTUBE_SHORTS_HOSTS:
+            return SocialPost(platform='YouTube Shorts', author='YouTube', handle='',
+                              original='', translation=None, has_media=True,
+                              has_video=True, media_complete=False,
+                              caption_known_empty=False)
         if self.http_session is None:
             return None
         key = canonical_url(source)
@@ -420,7 +428,7 @@ class VideoBot(discord.Client):
             await interaction.response.send_message('Команда доступна только в разрешённом канале сервера.', ephemeral=True)
             return
         if not is_supported_url(url.strip()):
-            await interaction.response.send_message('Отправь одну HTTPS-ссылку на публичный пост X/Twitter или TikTok.', ephemeral=True)
+            await interaction.response.send_message('Отправь HTTPS-ссылку на публичный пост X/Twitter, TikTok или YouTube Shorts.', ephemeral=True)
             return
         source = canonical_url(url.strip())
         now = time.monotonic()
