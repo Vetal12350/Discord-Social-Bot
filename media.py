@@ -24,7 +24,7 @@ worker_slot = asyncio.Semaphore(1)
 SAFE_MEDIA_WORKER_REASONS = frozenset({
     'format_unavailable', 'http_403', 'http_429', 'access_challenge',
     'extractor_failed', 'network_timeout', 'network_rejected',
-    'network_or_policy_error', 'worker_error',
+    'network_or_policy_error', 'worker_error', 'no_mp4_output',
 })
 
 
