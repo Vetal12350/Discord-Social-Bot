@@ -69,7 +69,8 @@ class CurlGuardTests(unittest.TestCase):
         self.assertNotIn('curl_options', calls[0][2])
 
     def test_private_dns_is_rejected_before_native_socket(self):
-        request = lambda *_a, **_kw: self.fail('No native connection allowed')
+        def request(*_a, **_kw):
+            self.fail('No native connection allowed')
         for ip in ('127.0.0.1', '10.0.0.1', '169.254.169.254', '::1', 'fc00::1'):
             result = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (ip, 443))]
             with self.subTest(ip=ip):
@@ -87,7 +88,8 @@ class CurlGuardTests(unittest.TestCase):
                 pinned_address('www.tiktok.com')
 
     def test_unsupported_destination_rejected_without_dns(self):
-        request = lambda *_a, **_kw: self.fail('No native request allowed')
+        def request(*_a, **_kw):
+            self.fail('No native request allowed')
         for target in ('http://www.tiktok.com/', 'https://127.0.0.1/',
                        'https://www.tiktok.com:443/', 'https://evil.example/video',
                        'https://user:pass@www.tiktok.com/video'):
@@ -135,7 +137,8 @@ class CurlGuardTests(unittest.TestCase):
                          ['www.tiktok.com:443:93.184.215.14'])
 
     def test_method_and_proxies_rejected(self):
-        request = lambda *_a, **_kw: self.fail('Must not connect')
+        def request(*_a, **_kw):
+            self.fail('Must not connect')
         for kwargs in ({'method': 'POST'},
                        {'method': 'GET', 'proxy': 'socks5://localhost:9050'},
                        {'method': 'GET', 'proxies': {'https': 'http://127.0.0.1:1080'}}):

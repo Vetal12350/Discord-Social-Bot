@@ -49,7 +49,7 @@ class XLinkAliasesTest(unittest.TestCase):
             f"https://evil.test@fixvx.com/u/status/{POST_ID}",
             f"https://fixvx.com:444/u/status/{POST_ID}",
             "https://fixvx.com/settings",
-            f"https://fixvx.com/u/status/notanid",
+            "https://fixvx.com/u/status/notanid",
             f"https://random.fxtwitter.com/u/status/{POST_ID}",
             f"https://fxtwitter.com/u/status/{POST_ID}/unknown",
         )

@@ -161,7 +161,11 @@ class VideoBot(discord.Client):
                     await self.media_cache.put(cache_key, media)
                     return media, info
             except MediaTooLarge:
-                raise
+                if post.platform != 'TikTok':
+                    raise
+                # The direct URL can point to an oversized quality variant.
+                # TikTok's bounded worker may still find a fitting H.264 MP4.
+                log.info('direct_mp4_failed reason_type=oversized; trying_media_worker')
             except (RuntimeError, OSError, ValueError, TimeoutError, aiohttp.ClientError) as exc:
                 # Never emit an exception message: it may contain signed URLs.
                 log.info('direct_mp4_failed reason_type=%s; trying_media_worker',
