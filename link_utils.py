@@ -25,6 +25,7 @@ X_HOSTS.update(
     for prefix in ("g", "t", "i", "d", "dl", "m", "o")
 )
 TIKTOK_HOSTS = {"tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com", "vt.tiktok.com"}
+YOUTUBE_SHORTS_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com"}
 
 
 def extract_urls(message: str, limit: int = 3) -> list[str]:
@@ -53,6 +54,8 @@ def is_supported_url(url: str) -> bool:
             return False
         if host in X_HOSTS:
             return bool(re.fullmatch(r"/(?:[A-Za-z0-9_]{1,50}|i/web)/status/[0-9]{1,20}(?:/(?:video|photo)/[1-9])?/?", p.path, re.IGNORECASE))
+        if host in YOUTUBE_SHORTS_HOSTS:
+            return bool(re.fullmatch(r"/shorts/[A-Za-z0-9_-]{11}/?", p.path))
         if host in TIKTOK_HOSTS:
             if host in {"vm.tiktok.com", "vt.tiktok.com"}:
                 return bool(re.fullmatch(r"/[A-Za-z0-9_-]+/?", p.path))
@@ -71,6 +74,8 @@ def canonical_url(url: str) -> str:
     if p.hostname.lower() in X_HOSTS:
         post_id = re.search(r'/status/([0-9]+)', p.path, re.I).group(1)
         return f'https://x.com/i/status/{post_id}'
+    if p.hostname.lower() in YOUTUBE_SHORTS_HOSTS:
+        return f'https://www.youtube.com{p.path.rstrip("/")}'
     return urlunsplit(('https', p.hostname.lower(), p.path.rstrip('/'), '', ''))
 
 
@@ -80,6 +85,9 @@ def to_embed_url(url: str) -> str:
         raise ValueError("Unsupported or malformed social link")
     p = urlsplit(url)
     host = (p.hostname or "").lower()
+    if host in YOUTUBE_SHORTS_HOSTS:
+        # Shorts are downloaded as MP4, never forwarded through a third-party embed proxy.
+        return canonical_url(url)
     if host in X_HOSTS:
         proxy = "fixupx.com"
     elif host == "vm.tiktok.com":

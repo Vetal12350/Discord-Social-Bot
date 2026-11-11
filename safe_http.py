@@ -14,7 +14,10 @@ API_HOSTS = {'api.fxtwitter.com', 'www.tiktok.com', 'api.mymemory.translated.net
 MEDIA_DOMAINS = ('twimg.com', 'tiktok.com', 'tiktokv.com', 'tiktokcdn.com',
                  'tiktokcdn-us.com', 'tiktokcdn-eu.com', 'muscdn.com',
                  'byteoversea.com', 'ibytedtos.com', 'ibyteimg.com', 'byteimg.com',
-                 'twitter.com', 'x.com', 'syndication.twimg.com')
+                 'twitter.com', 'x.com', 'syndication.twimg.com',
+                 # Shorts: only the official YouTube player/API and CDN hosts.
+                 'youtube.com', 'youtubei.googleapis.com', 'googlevideo.com',
+                 'ytimg.com', 'youtube-nocookie.com')
 
 
 def public_ip(value: str) -> bool:
