@@ -28,6 +28,10 @@ from webhook_repost import WebhookFailure, WebhookPoster, caption, delete_source
 
 log = logging.getLogger('discord-video-bot')
 NO_MENTIONS = discord.AllowedMentions.none()
+# Cap concurrent incoming messages, not their arrival rate. The per-message
+# media lock still serializes downloads and prevents simultaneous uploads.
+MAX_AUTO_INFLIGHT = 8
+MAX_USER_INFLIGHT = 4
 
 
 def clip(text: str, limit: int) -> str:
@@ -108,7 +112,7 @@ class VideoBot(discord.Client):
         self.media_cache = MediaCache()
         self.post_cache = OrderedDict()
         self.seen_messages = OrderedDict()
-        self.auto_requests = OrderedDict()
+        self.auto_active_by_user: dict[int, int] = {}
         self.last_requested = OrderedDict()
         self.active_messages = 0
         self.download_busy = False
@@ -365,11 +369,22 @@ class VideoBot(discord.Client):
         in_thread = isinstance(message.channel, discord.Thread)
         if not (permissions.send_messages_in_threads if in_thread else permissions.send_messages):
             return
-        if self.active_messages >= 3 or under_pressure() or now - self.auto_requests.get(message.author.id, -100) < 5:
+        # Rate-limit *concurrent work*, not messages arriving in the same five
+        # seconds. The old time gate silently discarded rapid TikTok posts.
+        # Existing media_lock and metadata_slots bound actual network load.
+        if self.active_messages >= MAX_AUTO_INFLIGHT:
+            log.info('repost skipped reason=global_inflight_limit')
+            return
+        author_id = message.author.id
+        if self.auto_active_by_user.get(author_id, 0) >= MAX_USER_INFLIGHT:
+            log.info('repost skipped reason=user_inflight_limit')
+            return
+        if under_pressure():
+            log.info('repost skipped reason=memory_pressure')
             return
         remember(self.seen_messages, message.id, now, 2000)
-        remember(self.auto_requests, message.author.id, now)
         self.active_messages += 1
+        self.auto_active_by_user[author_id] = self.auto_active_by_user.get(author_id, 0) + 1
         try:
             for index, source in enumerate(urls):
                 if source in self.active_posts:
@@ -414,6 +429,11 @@ class VideoBot(discord.Client):
                     self.active_posts.discard(source)
         finally:
             self.active_messages -= 1
+            remaining = self.auto_active_by_user[author_id] - 1
+            if remaining:
+                self.auto_active_by_user[author_id] = remaining
+            else:
+                self.auto_active_by_user.pop(author_id, None)
 
     async def video(self, interaction: discord.Interaction, url: str):
         if not interaction.guild or (self.config.channels and interaction.channel_id not in self.config.channels):
