@@ -261,6 +261,54 @@ class RepostIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.sent, [])
         current.delete.assert_not_awaited()
 
+    async def test_webhook_failures_have_stage_identity_and_do_not_retry(self):
+        for failure in ('timeout', 'connection', '403', '429', '500', 'malformed', 'channel', 'webhook'):
+            with self.subTest(failure=failure):
+                session = Session(failure=failure)
+                post = await self.metadata(session)
+                msg, current, rights = self.message()
+                with patch('bot.run_media', side_effect=self.worker), \
+                     self.assertLogs('discord-video-bot', level='WARNING') as captured:
+                    with self.assertRaises(WebhookFailure):
+                        await VideoBot.repost_message(self.bot(session), msg, post, SOURCE, rights)
+                output = '\n'.join(captured.output)
+                self.assertIn('repost_failure stage=webhook error_type=WebhookFailure', output)
+                self.assertIn('source_key=tiktok:7123456789012345678 message_id=1 channel_id=7', output)
+                self.assertNotIn('test-fixture', output)
+                self.assertEqual(len(session.sent), 1)
+                current.delete.assert_not_awaited()
+                current.edit.assert_not_awaited()
+
+    async def test_webhook_acquisition_failure_is_distinct_and_does_not_leak_exception(self):
+        session = Session()
+        bot = self.bot(session)
+        bot.webhook_poster.get_webhook.side_effect = WebhookFailure('unsafe-secret-webhook-url', uncertain=False)
+        post = await self.metadata(session)
+        msg, current, rights = self.message()
+        with self.assertLogs('discord-video-bot', level='WARNING') as captured:
+            with self.assertRaises(WebhookFailure):
+                await VideoBot.repost_message(bot, msg, post, SOURCE, rights)
+        self.assertIn('stage=webhook_acquire', captured.output[0])
+        self.assertIn('message_id=1 channel_id=7 uncertain=False', captured.output[0])
+        self.assertNotIn('unsafe-secret', captured.output[0])
+        self.assertEqual(session.sent, [])
+        current.delete.assert_not_awaited()
+
+    async def test_mismatched_receipt_is_correlated_without_a_second_send(self):
+        for failure in ('attachments', 'text'):
+            with self.subTest(failure=failure):
+                session = Session(failure=failure)
+                post = await self.metadata(session)
+                msg, current, rights = self.message()
+                with patch('bot.run_media', side_effect=self.worker), \
+                     self.assertLogs('discord-video-bot', level='INFO') as captured:
+                    await VideoBot.repost_message(self.bot(session), msg, post, SOURCE, rights)
+                output = '\n'.join(captured.output)
+                self.assertIn('repost_receipt stage=webhook source_key=tiktok:7123456789012345678', output)
+                self.assertIn('message_id=1 channel_id=7 media_confirmed=False', output)
+                self.assertEqual(len(session.sent), 1)
+                current.delete.assert_not_awaited()
+
     async def test_missing_audio_keeps_video_source(self):
         session = Session()
         post = await self.metadata(session)

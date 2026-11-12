@@ -345,7 +345,13 @@ class VideoBot(discord.Client):
                         receipt = await self.webhook_poster.execute(
                             self.http_session, webhook, parent_id, thread_id, message.channel.id,
                             message.author, content, files)
-        except WebhookFailure:
+                        log.info('repost_receipt stage=webhook source_key=%s message_id=%s channel_id=%s '
+                                 'media_confirmed=%s reason=%s', source_log_key(source), message.id,
+                                 message.channel.id, receipt.media_confirmed, receipt.confirmation_reason)
+        except WebhookFailure as exc:
+            log.warning('repost_failure stage=%s error_type=WebhookFailure source_key=%s '
+                        'message_id=%s channel_id=%s uncertain=%s', stage,
+                        source_log_key(source), message.id, message.channel.id, exc.uncertain)
             raise
         except AnimationError as exc:
             log.info('GIF conversion failed reason=%s detail=%r attempts=%s',
@@ -429,8 +435,9 @@ class VideoBot(discord.Client):
                     except WebhookFailure as exc:
                         # WebhookFailure messages are fixed, user-safe diagnostics.
                         # Do not log post URLs, content or secret webhook credentials.
-                        log.info('Webhook repost incomplete (uncertain=%s reason=%s)',
-                                 exc.uncertain, str(exc))
+                        log.info('Webhook repost incomplete (uncertain=%s reason=%s) '
+                                 'source_key=%s message_id=%s channel_id=%s',
+                                 exc.uncertain, str(exc), source_log_key(source), message.id, message.channel.id)
                         log.info('delete_source result=skipped reason=webhook_unconfirmed detail=repost_failed '
                                  'message_id=%s channel_id=%s', message.id, message.channel.id)
                         # Leave Discord's existing X/TikTok embed untouched by default:
