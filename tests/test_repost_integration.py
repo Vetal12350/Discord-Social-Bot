@@ -18,7 +18,8 @@ from bot import VideoBot
 from media import MediaTooLarge
 from media_cache import MediaCache
 from media_worker import select_bounded_mp4
-from social_posts import fetch_social_post
+from social_posts import fetch_social_post, parse_x_data
+from test_translation_errors import NOTICE, SOURCE as X_SOURCE, payload as x_payload
 from webhook_repost import WebhookFailure, WebhookPoster
 
 
@@ -282,6 +283,19 @@ class RepostIntegrationTests(unittest.IsolatedAsyncioTestCase):
         with patch('bot.run_media', side_effect=self.worker):
             await VideoBot.repost_message(self.bot(session), msg, post, SOURCE, rights)
         self.assertIn(ORIGINAL, session.sent[0][0]['content'])
+        current.delete.assert_not_awaited()
+
+    async def test_deepl_notice_is_not_sent_and_untranslated_source_is_not_deleted(self):
+        session = Session()
+        post = parse_x_data(x_payload())
+        self.assertIsNone(post.translation)
+        self.assertTrue(post.translation_unavailable)
+        msg, current, rights = self.message(X_SOURCE)
+        await VideoBot.repost_message(self.bot(session), msg, post, X_SOURCE, rights)
+        self.assertEqual(len(session.sent), 1)
+        self.assertIn(post.original, session.sent[0][0]['content'])
+        self.assertNotIn(NOTICE, session.sent[0][0]['content'])
+        self.assertNotIn('DeepL', session.sent[0][0]['content'])
         current.delete.assert_not_awaited()
 
     async def test_preparation_errors_post_nothing_and_keep_source(self):
