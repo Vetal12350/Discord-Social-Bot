@@ -16,7 +16,7 @@ from discord import app_commands
 from dotenv import load_dotenv
 
 from config import Config
-from link_utils import canonical_url, extract_urls, is_supported_url
+from link_utils import canonical_url, extract_urls, is_supported_url, source_log_key
 from media import MAX_BYTES, MediaTooLarge, download_image, download_mp4, run_media
 from media_cache import MediaCache
 from process_limits import under_pressure
@@ -269,11 +269,12 @@ class VideoBot(discord.Client):
                 # successful translation that previously replaced the original.
                 if post:
                     log.info('caption_metadata platform=%s original_chars=%d translated_chars=%d '
-                             'media=%s empty_confirmed=%s',
+                             'media=%s empty_confirmed=%s source_key=%s',
                              post.platform, len(post.original),
-                             len(post.translation or ''), post.has_media, post.caption_known_empty)
+                             len(post.translation or ''), post.has_media, post.caption_known_empty,
+                             source_log_key(source))
                 else:
-                    log.info('caption_metadata unavailable')
+                    log.info('caption_metadata unavailable source_key=%s', source_log_key(source))
                 # One cache includes metadata and its protected Russian translation.
                 remember(self.post_cache, key, (time.monotonic(), post), 100)
                 return post
@@ -292,6 +293,7 @@ class VideoBot(discord.Client):
         try:
             async with asyncio.timeout(180):
                 async with self.media_lock:
+                    stage = 'webhook_acquire'
                     webhook, parent_id, thread_id = await self.webhook_poster.get_webhook(
                         message.channel, self.user, message.guild.me)
                     limit = min(MAX_BYTES, message.guild.filesize_limit)
@@ -305,12 +307,14 @@ class VideoBot(discord.Client):
                                      if post.is_gif else None)
                             cached_animation = video is not None
                             if video is None:
+                                stage = 'video_prepare'
                                 video, info = await self.prepare_video(post, source, folder, limit)
                                 if post.platform == 'TikTok' and not info.audio_codecs:
                                     # A fitting silent variant does not prove the
                                     # source soundtrack was preserved.
                                     media_complete = False
                             if post.is_gif and not cached_animation:
+                                stage = 'animation_convert'
                                 animation, details = await convert_animation(video, folder, limit)
                                 video.unlink(missing_ok=True)
                                 video = animation
@@ -320,6 +324,7 @@ class VideoBot(discord.Client):
                             paths.append(video)
                             used += video.stat().st_size
                         for index, image in enumerate(post.image_urls[:10 - len(paths)]):
+                            stage = 'image_prepare'
                             remaining = limit - used
                             if remaining <= 0:
                                 raise MediaTooLarge('Repost exceeds upload budget')
@@ -340,7 +345,13 @@ class VideoBot(discord.Client):
                         receipt = await self.webhook_poster.execute(
                             self.http_session, webhook, parent_id, thread_id, message.channel.id,
                             message.author, content, files)
-        except WebhookFailure:
+                        log.info('repost_receipt stage=webhook source_key=%s message_id=%s channel_id=%s '
+                                 'media_confirmed=%s reason=%s', source_log_key(source), message.id,
+                                 message.channel.id, receipt.media_confirmed, receipt.confirmation_reason)
+        except WebhookFailure as exc:
+            log.warning('repost_failure stage=%s error_type=WebhookFailure source_key=%s '
+                        'message_id=%s channel_id=%s uncertain=%s', stage,
+                        source_log_key(source), message.id, message.channel.id, exc.uncertain)
             raise
         except AnimationError as exc:
             log.info('GIF conversion failed reason=%s detail=%r attempts=%s',
@@ -351,7 +362,8 @@ class VideoBot(discord.Client):
             raise WebhookFailure('Медиа больше лимита загрузки; исходное сообщение сохранено.') from exc
         except (RuntimeError, OSError, ValueError, TimeoutError, aiohttp.ClientError) as exc:
             # Never log signed media URLs, response bodies, tokens or post captions.
-            log.warning('repost_failure stage=%s error_type=%s', stage, type(exc).__name__)
+            log.warning('repost_failure stage=%s error_type=%s source_key=%s message_id=%s channel_id=%s',
+                        stage, type(exc).__name__, source_log_key(source), message.id, message.channel.id)
             raise WebhookFailure('Не удалось подготовить пересылку; исходное сообщение сохранено.', uncertain=sending) from exc
         # Never resend the webhook if deleting/suppressing the source fails.
         try:
@@ -383,14 +395,17 @@ class VideoBot(discord.Client):
         # seconds. The old time gate silently discarded rapid TikTok posts.
         # Existing media_lock and metadata_slots bound actual network load.
         if self.active_messages >= MAX_AUTO_INFLIGHT:
-            log.info('repost skipped reason=global_inflight_limit')
+            log.info('repost skipped reason=global_inflight_limit message_id=%s channel_id=%s',
+                     message.id, message.channel.id)
             return
         author_id = message.author.id
         if self.auto_active_by_user.get(author_id, 0) >= MAX_USER_INFLIGHT:
-            log.info('repost skipped reason=user_inflight_limit')
+            log.info('repost skipped reason=user_inflight_limit message_id=%s channel_id=%s',
+                     message.id, message.channel.id)
             return
         if under_pressure():
-            log.info('repost skipped reason=memory_pressure')
+            log.info('repost skipped reason=memory_pressure message_id=%s channel_id=%s',
+                     message.id, message.channel.id)
             return
         remember(self.seen_messages, message.id, now, 2000)
         self.active_messages += 1
@@ -398,10 +413,13 @@ class VideoBot(discord.Client):
         try:
             for index, source in enumerate(urls):
                 if source in self.active_posts:
-                    log.info('repost skipped reason=post_inflight')
+                    log.info('repost skipped reason=post_inflight source_key=%s message_id=%s channel_id=%s',
+                             source_log_key(source), message.id, message.channel.id)
                     continue  # Retain this second source message; no partial or duplicate repost.
                 self.active_posts.add(source)
                 try:
+                    log.info('repost_attempt source_key=%s message_id=%s channel_id=%s',
+                             source_log_key(source), message.id, message.channel.id)
                     post = await self.get_details(source)
                     async def send(**payload):
                         # discord.py sends enforce_nonce=True; retries reuse this nonce.
@@ -417,8 +435,9 @@ class VideoBot(discord.Client):
                     except WebhookFailure as exc:
                         # WebhookFailure messages are fixed, user-safe diagnostics.
                         # Do not log post URLs, content or secret webhook credentials.
-                        log.info('Webhook repost incomplete (uncertain=%s reason=%s)',
-                                 exc.uncertain, str(exc))
+                        log.info('Webhook repost incomplete (uncertain=%s reason=%s) '
+                                 'source_key=%s message_id=%s channel_id=%s',
+                                 exc.uncertain, str(exc), source_log_key(source), message.id, message.channel.id)
                         log.info('delete_source result=skipped reason=webhook_unconfirmed detail=repost_failed '
                                  'message_id=%s channel_id=%s', message.id, message.channel.id)
                         # Leave Discord's existing X/TikTok embed untouched by default:

@@ -74,6 +74,19 @@ def canonical_url(url: str) -> str:
     return urlunsplit(('https', p.hostname.lower(), p.path.rstrip('/'), '', ''))
 
 
+def source_log_key(url: str) -> str:
+    """Public post identity only; never echo a host, handle, query or CDN URL."""
+    if not is_supported_url(url):
+        return 'unsupported'
+    parsed = urlsplit(url)
+    if parsed.hostname.lower() in X_HOSTS:
+        return 'x:' + re.search(r'/status/([0-9]+)', parsed.path, re.I).group(1)
+    match = re.search(r'/(?:video|photo)/([0-9]+)', parsed.path, re.I)
+    if match:
+        return 'tiktok:' + match.group(1)
+    return 'tiktok-short:' + parsed.path.rstrip('/').rsplit('/', 1)[-1]
+
+
 def to_embed_url(url: str) -> str:
     """Switch a validated social URL to a public embed proxy; discard tracking params."""
     if not is_supported_url(url):

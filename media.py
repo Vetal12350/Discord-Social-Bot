@@ -8,10 +8,12 @@ import logging
 import os
 from pathlib import Path
 import sys
+import time
 from urllib.parse import urljoin
 
 import aiohttp
 import psutil
+from link_utils import source_log_key
 from safe_http import allowed_url
 from media_cache import MediaCache
 from process_limits import RSS_LIMIT, limit_process, under_pressure
@@ -167,6 +169,9 @@ async def download_mp4(session, url: str, destination: Path, limit: int):
 async def run_media(url: str, directory: Path, *, download: bool,
                     limit: int = MAX_BYTES) -> dict:
     if under_pressure(reserve=RSS_LIMIT + (min(limit, MAX_BYTES) if download else 0)):
+        log.info('media_worker_guard source_key=%s mode=%s reason=memory_pressure reserve_bytes=%d',
+                 source_log_key(url), 'download' if download else 'metadata',
+                 RSS_LIMIT + (min(limit, MAX_BYTES) if download else 0))
         raise RuntimeError('Media worker skipped under memory pressure')
     async with worker_slot:
         return await _run_media(url, directory, download=download, limit=limit)
@@ -178,6 +183,21 @@ async def _run_media(url: str, directory: Path, *, download: bool,
     environment = child_environment(python=True, network=True)
     stdout_path = directory / 'result.json'
     stderr_path = directory / 'worker.log'
+    started = time.monotonic()
+    size = rss = 0
+    cpu_seconds = 0.0
+
+    def guard(reason):
+        # Only fixed reasons, measured numbers and a validated public post key.
+        # Do not read/log raw stderr or provider exception messages.
+        log.info('media_worker_guard source_key=%s mode=%s reason=%s elapsed_ms=%d '
+                 'directory_bytes=%d upload_limit=%d stdout_bytes=%d stderr_bytes=%d '
+                 'rss_bytes=%d rss_limit=%d cpu_seconds=%.3f cpu_limit=8',
+                 source_log_key(url), 'download' if download else 'metadata', reason,
+                 round((time.monotonic() - started) * 1000), size, limit,
+                 stdout_path.stat().st_size, stderr_path.stat().st_size,
+                 rss, RSS_LIMIT, cpu_seconds)
+
     with stdout_path.open('wb') as stdout, stderr_path.open('wb') as stderr:
         process = await asyncio.create_subprocess_exec(
             sys.executable, str(Path(__file__).with_name('media_worker.py')),
@@ -195,13 +215,25 @@ async def _run_media(url: str, directory: Path, *, download: bool,
                 while process.returncode is None:
                     # Worker writes only one stream; allow one network buffer beyond limit.
                     size = sum(p.stat().st_size for p in directory.iterdir() if p.is_file())
-                    if (size > limit + 512 * 1024 or stdout_path.stat().st_size > 1024 * 1024
-                            or stderr_path.stat().st_size > 65536):
+                    if size > limit + 512 * 1024:
+                        guard('directory_limit')
+                        raise RuntimeError('Media size limit exceeded')
+                    if stdout_path.stat().st_size > 1024 * 1024:
+                        guard('stdout_limit')
+                        raise RuntimeError('Media size limit exceeded')
+                    if stderr_path.stat().st_size > 65536:
+                        guard('stderr_limit')
                         raise RuntimeError('Media size limit exceeded')
                     if stats:
                         try:
                             cpu = stats.cpu_times()
-                            if stats.memory_info().rss > RSS_LIMIT or cpu.user + cpu.system > 8:
+                            rss = stats.memory_info().rss
+                            cpu_seconds = cpu.user + cpu.system
+                            if rss > RSS_LIMIT:
+                                guard('rss_limit')
+                                raise RuntimeError('Media worker resource limit exceeded')
+                            if cpu_seconds > 8:
+                                guard('cpu_limit')
                                 raise RuntimeError('Media worker resource limit exceeded')
                         except psutil.NoSuchProcess:
                             pass
@@ -211,10 +243,14 @@ async def _run_media(url: str, directory: Path, *, download: bool,
                         pass
                 if process.returncode:
                     reason = safe_worker_failure(stderr_path)
-                    log.info('media_worker_failure mode=%s reason=%s exit_kind=%s',
+                    log.info('media_worker_failure mode=%s reason=%s exit_kind=%s source_key=%s returncode=%d',
                              'download' if download else 'metadata', reason,
-                             'signal' if process.returncode < 0 else 'error')
+                             'signal' if process.returncode < 0 else 'error',
+                             source_log_key(url), process.returncode)
                     raise RuntimeError('Public media unavailable or blocked')
+        except TimeoutError:
+            guard('wall_timeout')
+            raise
         finally:
             if process.returncode is None:
                 try:
@@ -225,5 +261,6 @@ async def _run_media(url: str, directory: Path, *, download: bool,
             if close_job:
                 close_job()
     if stdout_path.stat().st_size > 1024 * 1024:
+        guard('stdout_limit')
         raise RuntimeError('Metadata too large')
     return parse_worker_output(stdout_path, download=download)
