@@ -298,6 +298,24 @@ class RepostIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('DeepL', session.sent[0][0]['content'])
         current.delete.assert_not_awaited()
 
+    async def test_third_post_preparation_failure_is_correlated_without_sending_or_deleting(self):
+        source = 'https://vt.tiktok.com/ZSp98gAmN'
+        session = Session()
+        post = await self.metadata(session)
+        msg, current, rights = self.message(source)
+        with patch('bot.run_media', new_callable=AsyncMock,
+                   side_effect=RuntimeError('https://cdn.example/?signature=DO_NOT_LOG')), \
+             self.assertLogs('discord-video-bot', level='INFO') as captured:
+            with self.assertRaises(WebhookFailure):
+                await VideoBot.repost_message(self.bot(session), msg, post, source, rights)
+        output = '\n'.join(captured.output)
+        self.assertIn('repost_failure stage=video_prepare error_type=RuntimeError', output)
+        self.assertIn('source_key=tiktok-short:ZSp98gAmN message_id=1 channel_id=7', output)
+        self.assertNotIn('DO_NOT_LOG', output)
+        self.assertEqual(session.sent, [])
+        current.delete.assert_not_awaited()
+        current.edit.assert_not_awaited()
+
     async def test_preparation_errors_post_nothing_and_keep_source(self):
         for failure in ('worker', 'missing', 'oversized', 'codec'):
             with self.subTest(failure=failure):
