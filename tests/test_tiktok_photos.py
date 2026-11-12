@@ -55,6 +55,13 @@ class PhotoParsingTests(unittest.TestCase):
         self.assertEqual(parse_photo_html(page(photo_item(), kind='sigi'), POST_ID)['image_urls'],
                          (SLIDE_A, SLIDE_B))
 
+    def test_explicit_empty_caption_is_distinct_from_missing_metadata(self):
+        item = photo_item()
+        item['desc'] = ''
+        self.assertTrue(parse_photo_html(page(item), POST_ID)['caption_known_empty'])
+        del item['desc']
+        self.assertFalse(parse_photo_html(page(item), POST_ID)['caption_known_empty'])
+
     def test_rejects_missing_or_partial_gallery_instead_of_cover(self):
         self.assertIsNone(parse_photo_html(page({
             'id': POST_ID, 'desc': '', 'video': {'cover': SLIDE_A},

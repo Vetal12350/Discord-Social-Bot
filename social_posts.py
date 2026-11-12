@@ -70,6 +70,23 @@ def normalize_text(value: object) -> str:
     return re.sub(r'[\x00-\x08\x0b-\x1f\x7f]', '', html.unescape(value)).strip() if isinstance(value, str) else ''
 
 
+def translation_text(value: object, *, provider: str) -> str:
+    """Reject the observed upstream DeepL upgrade notice, not source captions.
+
+    FxTwitter can return HTTP/code 200 and target_lang=ru while translation.text
+    contains this multilingual service error. Never log that payload or treat
+    it as a successful translation. The caller retains the original and may
+    use its existing fallback; an unavailable fallback still blocks deletion.
+    """
+    text = normalize_text(value)
+    folded = re.sub(r'\s+', ' ', text).casefold()
+    if (folded.startswith("you're using an older version of deepl.")
+            or folded.startswith('вы используете старую версию deepl.')):
+        log.info('translation_rejected provider=%s reason=deepl_upgrade_notice', provider)
+        return ''
+    return text
+
+
 def post_id_from_x(url: str) -> str:
     """Extract a validated numeric post ID; never build an HTTP URL from user host."""
     if not is_supported_url(url) or urlsplit(url).hostname.lower() not in X_HOSTS:
@@ -218,7 +235,7 @@ def parse_x_data(data: dict) -> SocialPost | None:
         media_complete = media_complete and video_count <= 1 and photo_count <= len(images)
     trans_obj = status.get('translation')
     target = normalize_text(trans_obj.get('target_lang')).lower() if isinstance(trans_obj, dict) else ''
-    translation = normalize_text(trans_obj.get('text')) if isinstance(trans_obj, dict) and target in ('ru', 'ru-ru') else None
+    translation = translation_text(trans_obj.get('text'), provider='fxtwitter') if isinstance(trans_obj, dict) and target in ('ru', 'ru-ru') else None
     if translation and translation.casefold() == original.casefold():
         translation = None
     if translation and not preserves_tokens(original, translation):
@@ -362,7 +379,7 @@ async def mymemory_translation(session: aiohttp.ClientSession, text: str, source
         if not data or str(data.get('responseStatus')) != '200' or data.get('quotaFinished'):
             return None
         result = data.get('responseData')
-        translated = normalize_text(result.get('translatedText')) if isinstance(result, dict) else ''
+        translated = translation_text(result.get('translatedText'), provider='mymemory') if isinstance(result, dict) else ''
         if not translated:
             return None
         output.append(translated)

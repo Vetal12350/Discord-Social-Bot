@@ -40,8 +40,7 @@ class BurstTests(unittest.IsolatedAsyncioTestCase):
             repost_message=repost,
         )
         tasks = []
-        with patch('bot.under_pressure', return_value=False), \
-             patch('bot.time.monotonic', return_value=1000):
+        with patch('bot.under_pressure', return_value=False):
             for n in range(4):
                 tasks.append(asyncio.create_task(VideoBot.on_message(fake, message(n))))
                 await asyncio.sleep(0)
