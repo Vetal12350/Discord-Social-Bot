@@ -112,6 +112,17 @@ def main():
         browser_target = ImpersonateTarget.from_str('chrome')
 
     class SafeYoutubeDL(yt_dlp.YoutubeDL):
+        def __init__(self, *args, **kwargs):
+            if is_tiktok:
+                from tiktok_requests import BoundedTikTokGet
+                self.tiktok_get_retry = BoundedTikTokGet()
+            super().__init__(*args, **kwargs)
+
+        def urlopen(self, request):
+            if is_tiktok:
+                return self.tiktok_get_retry.open(super().urlopen, request)
+            return super().urlopen(request)
+
         def build_request_director(self, handlers, preferences=None):
             # Keep the original urllib-only policy for X. TikTok can use
             # browser TLS, with native requests guarded in browser_http.

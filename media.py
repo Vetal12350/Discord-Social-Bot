@@ -7,6 +7,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import sys
 import time
 from urllib.parse import urljoin
@@ -41,6 +42,21 @@ def safe_worker_failure(stderr_path: Path) -> str:
     except OSError:
         pass
     return 'unclassified'
+
+
+def safe_worker_retry(stderr_path: Path):
+    """Read only our bounded retry marker, never emit arbitrary child stderr."""
+    try:
+        with stderr_path.open('rb') as source:
+            lines = source.read(65536).decode('utf-8', errors='replace').splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        match = re.fullmatch(r'media_worker_retry reason=(http_(?:403|429|500|502|503|504)) '
+                             r'phase=(short_redirect|metadata_get|media_get) delay_ms=([0-9]{1,4})', line)
+        if match and 250 <= int(match[3]) <= 2000:
+            return match[1], match[2], int(match[3])
+    return None
 
 
 def child_environment(*, python: bool = False, network: bool = False) -> dict[str, str]:
@@ -107,6 +123,7 @@ async def download_image(session, url: str, destination: Path, limit: int) -> Pa
                     url = urljoin(url, response.headers.get('Location', ''))
                     continue
                 if response.status != 200:
+                    log.info('media_download_failure kind=image status=%d phase=response', response.status)
                     raise RuntimeError('Image unavailable')
                 if response.content_length and response.content_length > limit:
                     raise MediaTooLarge('Image exceeds remaining upload budget')
@@ -147,6 +164,7 @@ async def download_mp4(session, url: str, destination: Path, limit: int):
                     url = urljoin(url, response.headers.get('Location', ''))
                     continue
                 if response.status != 200:
+                    log.info('media_download_failure kind=mp4 status=%d phase=response', response.status)
                     raise RuntimeError('Media unavailable')
                 if response.content_length and response.content_length > limit:
                     raise MediaTooLarge('Media size limit exceeded')
@@ -260,6 +278,10 @@ async def _run_media(url: str, directory: Path, *, download: bool,
                 await process.wait()
             if close_job:
                 close_job()
+            retry = safe_worker_retry(stderr_path)
+            if retry:
+                log.info('media_worker_retry source_key=%s mode=%s reason=%s phase=%s delay_ms=%d',
+                         source_log_key(url), 'download' if download else 'metadata', *retry)
     if stdout_path.stat().st_size > 1024 * 1024:
         guard('stdout_limit')
         raise RuntimeError('Metadata too large')
