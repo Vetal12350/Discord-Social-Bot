@@ -147,3 +147,28 @@ retry_count/успех после retry, guard reason и receipt; плеер/з�
 отдельно. Для полного denominator всех валидных входов нужна входная метрика
 до inflight admission. Старые unknown и неотмеченные пропуски исключают
 достоверное восстановление исторической общей успешности.
+
+## Дополнение перед ограниченным выпуском
+
+Исходный retry marker показывал phase только при повторе. Теперь каждый
+перехваченный HTTPError, включая запрещённый retry и HTTP-ошибку второй
+попытки, получает фиксированный media_worker_http_failure. Parent переносит
+его в журнал с source_key/mode и на успехе, и на отказе worker.
+
+Поля: phase=short_redirect/metadata_get/media_get/other/unknown; status из
+фиксированного набора http_403/http_404/http_429/http_5xx и других категорий;
+retry=scheduled/skipped; retry_reason из фиксированного списка, в том числе
+first_party_403, html_challenge, status_not_retryable, authorization,
+retry_budget_exhausted, retry_after_not_eligible. Ни URL, ни заголовки/body,
+ни exception text не попадают в эти записи. Не более 8 записей на worker,
+parent читает максимум 64 КиБ и принимает только allowlisted tokens.
+
+Phase — роль исходного запроса urlopen: HEAD/GET короткой ссылки относится
+к short_redirect даже если отказ произошёл внутри раскрытия редиректа.
+Это не обещание определить конечный HTTP endpoint. Не-HTTP исключения
+(DNS, transport, body timeout) не получают выдуманный HTTP status/phase:
+сохраняется прежняя диагностика worker/parent guards.
+
+Правила retry, лимиты и Webhook не менялись. 127 unit tests проходят для
+этого PR, включая диагностику запрещённого/исчерпанного retry, sanitization,
+bounded output и доставку маркера из child в parent без повторного запуска.

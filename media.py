@@ -18,6 +18,7 @@ from link_utils import source_log_key
 from safe_http import allowed_url
 from media_cache import MediaCache
 from process_limits import RSS_LIMIT, limit_process, under_pressure
+from tiktok_requests import HTTP_CATEGORIES, HTTP_PHASES, MAX_HTTP_DIAGNOSTICS, RETRY_SKIP_REASONS
 
 log = logging.getLogger(__name__)
 MAX_BYTES = 19 * 1024 * 1024
@@ -53,10 +54,33 @@ def safe_worker_retry(stderr_path: Path):
         return None
     for line in lines:
         match = re.fullmatch(r'media_worker_retry reason=(http_(?:403|429|500|502|503|504)) '
-                             r'phase=(short_redirect|metadata_get|media_get) delay_ms=([0-9]{1,4})', line)
+                             r'phase=(short_redirect|metadata_get|media_get|other|unknown) delay_ms=([0-9]{1,4})', line)
         if match and 250 <= int(match[3]) <= 2000:
             return match[1], match[2], int(match[3])
     return None
+
+
+def safe_worker_http_failures(stderr_path: Path):
+    """Accept bounded fixed diagnostics even when retry is forbidden/not used."""
+    try:
+        with stderr_path.open('rb') as source:
+            lines = source.read(65536).decode('utf-8', errors='replace').splitlines()
+    except OSError:
+        return []
+    results = []
+    for line in lines:
+        match = re.fullmatch(r'media_worker_http_failure phase=([a-z_]+) status=([a-z_0-9]+) '
+                             r'retry=(scheduled|skipped) retry_reason=([a-z_0-9]+)', line)
+        if not match:
+            continue
+        phase, status, retry, reason = match.groups()
+        if (phase in HTTP_PHASES and status in HTTP_CATEGORIES
+                and ((retry == 'scheduled' and reason == 'eligible')
+                     or (retry == 'skipped' and reason in RETRY_SKIP_REASONS))):
+            results.append((phase, status, retry, reason))
+            if len(results) == MAX_HTTP_DIAGNOSTICS:
+                break
+    return results
 
 
 def child_environment(*, python: bool = False, network: bool = False) -> dict[str, str]:
@@ -278,6 +302,10 @@ async def _run_media(url: str, directory: Path, *, download: bool,
                 await process.wait()
             if close_job:
                 close_job()
+            for failure in safe_worker_http_failures(stderr_path):
+                log.info('media_worker_http_failure source_key=%s mode=%s phase=%s status=%s '
+                         'retry=%s retry_reason=%s',
+                         source_log_key(url), 'download' if download else 'metadata', *failure)
             retry = safe_worker_retry(stderr_path)
             if retry:
                 log.info('media_worker_retry source_key=%s mode=%s reason=%s phase=%s delay_ms=%d',
