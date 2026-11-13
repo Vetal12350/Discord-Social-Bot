@@ -29,15 +29,21 @@ class AdmissionMetricTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.active_messages, MAX_AUTO_INFLIGHT)
 
     async def test_no_tiktok_metric_for_x_or_excluded_or_seen_messages(self):
-        for kind in ('x', 'excluded', 'seen'):
+        for kind in ('x', 'excluded', 'seen', 'bot', 'webhook', 'no_send'):
             bot = self.bot()
             msg = message(7)
             if kind == 'x':
                 msg.content = 'https://x.com/user/status/123'
             elif kind == 'excluded':
                 bot.config.channels = frozenset({99999})
-            else:
+            elif kind == 'seen':
                 bot.seen_messages[msg.id] = 1
+            elif kind == 'bot':
+                msg.author.bot = True
+            elif kind == 'webhook':
+                msg.webhook_id = 123
+            else:
+                msg.channel.permissions_for = lambda member: SimpleNamespace(send_messages=False)
             with self.subTest(kind=kind), patch('bot.log.info') as info:
                 await VideoBot.on_message(bot, msg)
             self.assertFalse(any(call.args and call.args[0].startswith('tiktok_received') for call in info.call_args_list))
@@ -53,3 +59,24 @@ class AdmissionMetricTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('source_keys=tiktok-short:ZSpQHULbU,tiktok:7707467025265757460', first)
         self.assertNotIn('tracking', first)
         self.assertNotIn('@user', first)
+
+    async def test_same_post_key_in_different_url_forms_is_counted_once_without_changing_processing(self):
+        bot = self.bot()
+        bot.active_messages = 0
+        bot.get_details.return_value = object()
+        msg = message(7)
+        msg.author.display_name = 'PRIVATE_NAME'
+        msg.content = ('PRIVATE_TEXT https://www.tiktok.com/@PRIVATE_HANDLE/video/7707467025265757460?token=SECRET '
+                       'https://m.tiktok.com/@PRIVATE_HANDLE/video/7707467025265757460')
+        with patch('bot.under_pressure', return_value=False), self.assertLogs('discord-video-bot', level='INFO') as captured:
+            await VideoBot.on_message(bot, msg)
+            await VideoBot.on_message(bot, msg)  # Same Discord event is ignored after admission.
+        inputs = [line for line in captured.output if 'tiktok_received ' in line]
+        self.assertEqual(len(inputs), 1)
+        self.assertTrue(inputs[0].endswith('source_keys=tiktok:7707467025265757460'))
+        self.assertEqual(bot.get_details.await_count, 2)  # Existing per-URL processing is unchanged.
+        self.assertEqual(bot.repost_message.await_count, 2)
+        self.assertEqual(bot.active_messages, 0)
+        self.assertFalse(bot.active_posts)
+        for secret in ('PRIVATE_NAME', 'PRIVATE_HANDLE', 'PRIVATE_TEXT', 'SECRET', 'https://'):
+            self.assertNotIn(secret, '\n'.join(captured.output))

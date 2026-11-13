@@ -391,7 +391,8 @@ class VideoBot(discord.Client):
         in_thread = isinstance(message.channel, discord.Thread)
         if not (permissions.send_messages_in_threads if in_thread else permissions.send_messages):
             return
-        tiktok_keys = [key for source in urls if (key := source_log_key(source)).startswith('tiktok')]
+        tiktok_keys = list(dict.fromkeys(
+            key for source in urls if (key := source_log_key(source)).startswith('tiktok')))
         if tiktok_keys:
             log.info('tiktok_received message_id=%s channel_id=%s source_keys=%s',
                      message.id, message.channel.id, ','.join(tiktok_keys))
