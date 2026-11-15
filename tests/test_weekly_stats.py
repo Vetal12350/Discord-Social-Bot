@@ -73,13 +73,37 @@ class WeeklyStatsTests(unittest.TestCase):
                  'https://cdn.example/secret?token=DO_NOT_LOG\n',
                  'DISCORD_TOKEN=DO_NOT_LOG\n',
                  'x' * 10000 + ' repost_attempt source_key=x:1 message_id=1 \n']
-        main(io.StringIO(''.join(lines)), out)
+        main(io.StringIO(''.join(lines)), out, argv=[])
         text = out.getvalue()
         for secret in ('123456789012345678', '876543210987654321', '7707467025265757460',
                        '999888777', '55555', 'DO_NOT_LOG', 'cdn.example'):
             self.assertNotIn(secret, text)
         self.assertIn('Уникальные входы: 2 (TikTok 1, X 1)', text)
         self.assertEqual(len(text.splitlines()), 5)
+
+    def test_details_group_failures_by_fixed_categories_only(self):
+        lines = [P + l + '\n' for l in (
+            'repost_failure stage=video_prepare error_type=RuntimeError source_key=tiktok-short:ZSpb3bLxF '
+            'message_id=111111111111 channel_id=222222222222',
+            'media_worker_failure mode=download reason=http_403 exit_kind=error source_key=tiktok-short:ZSpb3bLxF '
+            'returncode=1',
+            'media_worker_http_failure source_key=tiktok-short:ZSpb3bLxF mode=download phase=media_get '
+            'status=http_403 retry=skipped retry_reason=html_challenge',
+            'media_worker_mirror source_key=tiktok:7707467025265757460 candidate=2 of=3',
+            'media_download_fallback kind=image candidate=2 of=2',
+        )]
+        out = io.StringIO()
+        main(io.StringIO(''.join(lines)), out, argv=['--details'])
+        text = out.getvalue()
+        self.assertIn('1 × tiktok video_prepare RuntimeError', text)
+        self.assertIn('1 × tiktok media_get http_403 html_challenge', text)
+        self.assertIn('1 × download http_403', text)
+        self.assertIn('Спасено зеркалами CDN: slide 1, video 1', text)
+        for secret in ('ZSpb3bLxF', '111111111111', '222222222222', '7707467025265757460'):
+            self.assertNotIn(secret, text)
+        short = io.StringIO()
+        main(io.StringIO(''.join(lines)), short, argv=[])
+        self.assertEqual(len(short.getvalue().splitlines()), 5)
 
     def test_malformed_lines_are_ignored(self):
         stats = run(['tiktok_received message_id=abc channel_id=9 source_keys=tiktok:1',
