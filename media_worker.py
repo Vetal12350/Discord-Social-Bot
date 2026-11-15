@@ -79,6 +79,85 @@ def select_bounded_mp4(ctx: dict, limit: int):
         yield max(moderate or unknown, key=quality)
 
 
+MAX_VIDEO_MIRRORS = 3  # Chosen CDN copy plus at most two copies of the same format.
+MIRROR_STATUSES = ('http error 403', 'http error 404')
+
+
+def same_format_mirrors(formats, primary) -> list:
+    """Other CDN copies of exactly the chosen format, in yt-dlp's order.
+
+    TikTok's PlayAddr.UrlList yields one yt-dlp format per mirror URL with
+    identical codec/size/dimensions. Never substitute a different quality,
+    codec or size: that would bypass the size-aware selection above.
+    """
+    keys = ('ext', 'protocol', 'vcodec', 'acodec', 'width', 'height', 'filesize', 'filesize_approx')
+    identity = tuple(primary.get(key) for key in keys)
+    seen = {primary.get('url')}
+    mirrors = []
+    for fmt in formats:
+        if not isinstance(fmt, dict) or tuple(fmt.get(key) for key in keys) != identity:
+            continue
+        url = fmt.get('url')
+        if not isinstance(url, str) or url in seen:
+            continue
+        seen.add(url)
+        mirrors.append(fmt)
+    return mirrors
+
+
+class MirrorPlan:
+    """Format selector yielding the n-th CDN copy of the bounded MP4 choice."""
+
+    def __init__(self, limit: int):
+        self.limit = limit
+        self.attempt = 0
+        self.available = 0
+
+    def candidates(self, ctx: dict) -> list:
+        primary = next(select_bounded_mp4(ctx, self.limit), None)
+        if primary is None:
+            return []
+        mirrors = same_format_mirrors(ctx.get('formats', ()), primary)
+        return [primary, *mirrors][:MAX_VIDEO_MIRRORS]
+
+    def __call__(self, ctx: dict):
+        candidates = self.candidates(ctx)
+        self.available = len(candidates)
+        if self.attempt < len(candidates):
+            yield candidates[self.attempt]
+
+
+def is_mirror_failure(exc: Exception) -> bool:
+    """Only a missing/forbidden media copy justifies trying another copy."""
+    return type(exc).__name__ == 'DownloadError' and any(
+        status in str(exc).lower() for status in MIRROR_STATUSES)
+
+
+def download_with_mirrors(downloader, info: dict, plan: MirrorPlan, folder: str) -> dict:
+    """Download the already-extracted video, trying same-format CDN copies.
+
+    No metadata re-extraction and no second worker: every attempt stays inside
+    this process's existing CPU/RSS/wall/disk limits. Partial files from a
+    failed copy are removed so a different URL is never resumed into them.
+    """
+    import copy
+    attempt = 0
+    while True:
+        plan.attempt = attempt
+        for leftover in Path(folder).glob('video.*'):
+            leftover.unlink(missing_ok=True)
+        try:
+            result = downloader.process_ie_result(copy.deepcopy(info), download=True)
+        except Exception as exc:  # noqa: BLE001 - re-raised unless a mirror applies
+            if not is_mirror_failure(exc) or attempt + 1 >= plan.available:
+                raise
+            attempt += 1
+            continue
+        if attempt:
+            print(f'media_worker_mirror candidate={attempt + 1} of={plan.available}', file=sys.stderr)
+        return result
+
+
 def network_guard(event, args):
     # urllib emits this for initial requests AND every redirect.
     if event == 'urllib.Request' and not allowed_url(args[0], media=True):
@@ -144,12 +223,19 @@ def main():
         'overwrites': False, 'writethumbnail': False, 'writeinfojson': False,
         'postprocessors': [], 'extract_flat': False,
     }
+    plan = None
     if is_tiktok:
         options['impersonate'] = browser_target
         if mode == 'download':
-            options['format'] = lambda ctx: select_bounded_mp4(ctx, int(limit))
+            plan = MirrorPlan(int(limit))
+            options['format'] = plan
     with SafeYoutubeDL(options) as downloader:
-        info = downloader.extract_info(url, download=mode == 'download')
+        if plan is not None:
+            info = downloader.extract_info(url, download=False)
+            if isinstance(info, dict) and info.get('_type') not in {'playlist', 'multi_video'}:
+                info = download_with_mirrors(downloader, info, plan, folder)
+        else:
+            info = downloader.extract_info(url, download=mode == 'download')
     if not isinstance(info, dict) or info.get('_type') in {'playlist', 'multi_video'}:
         raise ValueError('Only single public videos supported')
     if mode == 'download':
