@@ -1,0 +1,48 @@
+# Dependabot only opens pull requests; nothing is merged or deployed automatically.
+# CI (unit tests, imports) runs on each PR. Production is updated manually.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      # TikTok/X extractor breakages are usually fixed upstream in yt-dlp
+      # within days, so check daily.
+      interval: daily
+      time: "06:00"
+      timezone: Europe/Kyiv
+    open-pull-requests-limit: 3
+    groups:
+      # yt-dlp alone: its fixes are the urgent ones and are released often.
+      yt-dlp:
+        patterns: ["yt-dlp"]
+      # Everything else together, minor/patch only, to keep noise low.
+      runtime:
+        patterns: ["*"]
+        exclude-patterns: ["yt-dlp"]
+        update-types: [minor, patch]
+    ignore:
+      # Major upgrades of the bot's libraries need a deliberate review.
+      # (yt-dlp uses date versions, so it is not ignored here.)
+      - dependency-name: "discord.py"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "aiohttp"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "curl_cffi"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "Pillow"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "psutil"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "python-dotenv"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "langdetect"
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci"
