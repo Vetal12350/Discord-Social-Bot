@@ -60,6 +60,20 @@ def safe_worker_retry(stderr_path: Path):
     return None
 
 
+def safe_worker_mirror(stderr_path: Path):
+    """Read only the fixed same-format CDN mirror marker (no URLs)."""
+    try:
+        with stderr_path.open('rb') as source:
+            lines = source.read(65536).decode('utf-8', errors='replace').splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        match = re.fullmatch(r'media_worker_mirror candidate=([2-3]) of=([2-3])', line)
+        if match and int(match[1]) <= int(match[2]):
+            return int(match[1]), int(match[2])
+    return None
+
+
 def safe_worker_http_failures(stderr_path: Path):
     """Accept bounded fixed diagnostics even when retry is forbidden/not used."""
     try:
@@ -343,6 +357,10 @@ async def _run_media(url: str, directory: Path, *, download: bool,
             if retry:
                 log.info('media_worker_retry source_key=%s mode=%s reason=%s phase=%s delay_ms=%d',
                          source_log_key(url), 'download' if download else 'metadata', *retry)
+            mirror = safe_worker_mirror(stderr_path)
+            if mirror:
+                log.info('media_worker_mirror source_key=%s candidate=%d of=%d',
+                         source_log_key(url), *mirror)
     if stdout_path.stat().st_size > 1024 * 1024:
         guard('stdout_limit')
         raise RuntimeError('Metadata too large')
