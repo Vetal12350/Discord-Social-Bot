@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 
 from config import Config
 from link_utils import canonical_url, extract_urls, is_supported_url, source_log_key
-from media import MAX_BYTES, MediaTooLarge, download_image, download_mp4, run_media
+from media import MAX_BYTES, MediaTooLarge, download_image_candidates, download_mp4, run_media
 from media_cache import MediaCache
 from process_limits import under_pressure
 from mp4_info import InvalidMP4, inspect_mp4
@@ -331,7 +331,11 @@ class VideoBot(discord.Client):
                             photo_key = ('photo', image)
                             photo = await self.media_cache.get(photo_key, folder / f'photo_{index + 1}.img', remaining)
                             if photo is None:
-                                photo = await download_image(self.http_session, image, folder / f'photo_{index + 1}.img', remaining)
+                                mirrors = (post.image_alternates[index]
+                                           if index < len(post.image_alternates) else ())
+                                photo = await download_image_candidates(
+                                    self.http_session, (image, *mirrors),
+                                    folder / f'photo_{index + 1}.img', remaining)
                                 await self.media_cache.put(photo_key, photo)
                             paths.append(photo)
                             used += photo.stat().st_size

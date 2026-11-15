@@ -17,6 +17,7 @@ from safe_http import allowed_url
 
 MAX_HTML_BYTES = 2 * 1024 * 1024
 MAX_SLIDES = 10  # One Discord webhook message supports at most 10 files.
+MAX_URLS_PER_SLIDE = 3  # Primary CDN URL plus at most two mirrors of the same slide.
 PHOTO_PATH = re.compile(r"/@[A-Za-z0-9_.-]{1,100}/photo/([0-9]{1,20})/?", re.I)
 REHYDRATION = re.compile(
     r'<script\b(?=[^>]*\bid=["\']__UNIVERSAL_DATA_FOR_REHYDRATION__["\'])[^>]*>(.*?)</script\s*>',
@@ -57,6 +58,7 @@ def parse_photo_html(page: str, post_id: str) -> dict | None:
         return None
 
     result = []
+    alternates = []
     for image in images:
         if not isinstance(image, dict):
             return None
@@ -64,11 +66,14 @@ def parse_photo_html(page: str, post_id: str) -> dict | None:
         links = data.get('urlList') if isinstance(data, dict) else None
         if not isinstance(links, list):
             return None
-        selected = next((link for link in links
-                         if isinstance(link, str) and allowed_url(link, media=True)), None)
-        if not selected:
+        # TikTok lists mirrors of the *same* slide; one CDN copy can be gone
+        # (HTTP 404) while another still serves it. Keep a few vetted mirrors.
+        vetted = list(dict.fromkeys(link for link in links
+                                    if isinstance(link, str) and allowed_url(link, media=True)))
+        if not vetted:
             return None
-        result.append(selected)
+        result.append(vetted[0])
+        alternates.append(tuple(vetted[1:MAX_URLS_PER_SLIDE]))
 
     author = item.get('author')
     if not isinstance(author, dict):
@@ -81,6 +86,7 @@ def parse_photo_html(page: str, post_id: str) -> dict | None:
         'author': author.get('nickname') if isinstance(author.get('nickname'), str) else '',
         'handle': author.get('uniqueId') if isinstance(author.get('uniqueId'), str) else '',
         'image_urls': tuple(result),
+        'image_alternates': tuple(alternates),
     }
 
 
