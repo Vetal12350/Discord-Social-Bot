@@ -81,11 +81,16 @@ class Session:
         if 'tiktokcdn.com' in url:
             if self.failure == 'image' and 'slide2' in url:
                 return Response({}, 403)
+            if self.failure == 'primary_404' and 'slide2' in url and 'p16-sign' in url:
+                return Response({}, 404)
+            if self.failure == 'all_404' and 'slide2' in url:
+                return Response({}, 404)
             return Response(b'\xff\xd8\xfffixture-' + url.rsplit('/', 1)[-1].encode())
         item = {'id': '7123456789012345678', 'desc': ORIGINAL,
                 'author': {'nickname': 'Creator', 'uniqueId': 'creator'},
                 'imagePost': {'images': [{'imageURL': {'urlList': [
-                    f'https://p16-sign.tiktokcdn.com/slide{n}.jpeg']}} for n in range(1, 4)]}}
+                    f'https://p16-sign.tiktokcdn.com/slide{n}.jpeg',
+                    f'https://p19-sign.tiktokcdn.com/slide{n}.jpeg']}} for n in range(1, 4)]}}
         payload = {'__DEFAULT_SCOPE__': {'webapp.video-detail': {
             'statusCode': 0, 'itemInfo': {'itemStruct': item}}}}
         return Response(('<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__">'
@@ -251,6 +256,36 @@ class RepostIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(session.sent), 1)
                 current.delete.assert_not_awaited()
                 current.edit.assert_not_awaited()
+
+    async def test_dead_slide_copy_uses_mirror_of_same_slide(self):
+        session = Session(failure='primary_404')
+        post = await self.metadata(session, PHOTO)
+        msg, current, rights = self.message(PHOTO)
+        with self.assertLogs('media', level='INFO') as captured:
+            await VideoBot.repost_message(self.bot(session), msg, post, PHOTO, rights)
+        _, uploads, _ = session.sent[0]
+        self.assertEqual(len(uploads), 3)
+        for index, (_, body) in enumerate(uploads, 1):
+            self.assertTrue(body.endswith(f'slide{index}.jpeg'.encode()))
+        cdn = [url for url in session.gets if 'tiktokcdn.com' in url]
+        self.assertEqual(cdn, ['https://p16-sign.tiktokcdn.com/slide1.jpeg',
+                               'https://p16-sign.tiktokcdn.com/slide2.jpeg',
+                               'https://p19-sign.tiktokcdn.com/slide2.jpeg',
+                               'https://p16-sign.tiktokcdn.com/slide3.jpeg'])
+        logs = '\n'.join(captured.output)
+        self.assertIn('media_download_fallback kind=image candidate=2 of=2', logs)
+        self.assertNotIn('tiktokcdn', logs)
+        current.delete.assert_not_awaited()
+
+    async def test_slide_missing_on_every_mirror_posts_nothing(self):
+        session = Session(failure='all_404')
+        post = await self.metadata(session, PHOTO)
+        msg, current, rights = self.message(PHOTO)
+        with self.assertRaises(WebhookFailure):
+            await VideoBot.repost_message(self.bot(session), msg, post, PHOTO, rights)
+        self.assertEqual(session.sent, [])
+        current.delete.assert_not_awaited()
+        current.edit.assert_not_awaited()
 
     async def test_second_slide_failure_posts_nothing_and_keeps_source(self):
         session = Session(failure='image')

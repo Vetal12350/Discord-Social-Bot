@@ -70,6 +70,17 @@ class PhotoParsingTests(unittest.TestCase):
         self.assertIsNone(parse_photo_html(page(photo_item(urls=['https://evil.example/pic.jpg'])), POST_ID))
         self.assertIsNone(parse_photo_html(page(photo_item(urls=['http://p16-sign.tiktokcdn.com/p.jpg'])), POST_ID))
 
+    def test_keeps_up_to_two_vetted_mirrors_per_slide(self):
+        mirror = SLIDE_A.replace('p16-sign', 'p19-sign')
+        item = photo_item(count=1)
+        item['imagePost']['images'][0]['imageURL']['urlList'] = [
+            'https://evil.example/a.jpeg', SLIDE_A, SLIDE_A, mirror,
+            SLIDE_B, SLIDE_B.replace('p16', 'p77')]
+        result = parse_photo_html(page(item), POST_ID)
+        self.assertEqual(result['image_urls'], (SLIDE_A,))
+        self.assertEqual(result['image_alternates'], ((mirror, SLIDE_B),))
+        self.assertEqual(parse_photo_html(page(photo_item()), POST_ID)['image_alternates'], ((), ()))
+
     def test_no_html_script_execution_and_wrong_status(self):
         body = page(photo_item()).replace('"statusCode": 0', '"statusCode": 10204')
         self.assertIsNone(parse_photo_html(body, POST_ID))
@@ -111,3 +122,42 @@ class PhotoRoutingTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MirrorDownloadTests(unittest.IsolatedAsyncioTestCase):
+    async def run_candidates(self, outcomes):
+        from pathlib import Path
+        import media
+        calls = []
+
+        async def fake(session, url, destination, limit):
+            calls.append(url)
+            outcome = outcomes[len(calls) - 1]
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return Path(outcome)
+
+        with patch('media.download_image', side_effect=fake):
+            try:
+                result = await media.download_image_candidates(None, ('a', 'b', 'c'), Path('x'), 10)
+            except BaseException as exc:  # noqa: BLE001 - returned for assertions
+                return calls, exc
+        return calls, result
+
+    async def test_only_403_and_404_move_to_next_mirror(self):
+        from media import ImageUnavailable, MediaTooLarge
+        calls, result = await self.run_candidates([ImageUnavailable(404), ImageUnavailable(403), 'ok.jpg'])
+        self.assertEqual((calls, str(result)), (['a', 'b', 'c'], 'ok.jpg'))
+        for stop in (ImageUnavailable(500), ImageUnavailable(429), MediaTooLarge('big'),
+                     ValueError('html'), RuntimeError('Image destination rejected'), TimeoutError()):
+            with self.subTest(stop=type(stop).__name__):
+                calls, result = await self.run_candidates([stop, 'never.jpg', 'never.jpg'])
+                self.assertEqual(calls, ['a'])
+                self.assertIs(result, stop)
+
+    async def test_last_mirror_failure_is_reported(self):
+        from media import ImageUnavailable
+        calls, result = await self.run_candidates([ImageUnavailable(404)] * 3)
+        self.assertEqual(calls, ['a', 'b', 'c'])
+        self.assertIsInstance(result, ImageUnavailable)
+        self.assertIsInstance(result, RuntimeError)

@@ -60,6 +60,20 @@ def safe_worker_retry(stderr_path: Path):
     return None
 
 
+def safe_worker_mirror(stderr_path: Path):
+    """Read only the fixed same-format CDN mirror marker (no URLs)."""
+    try:
+        with stderr_path.open('rb') as source:
+            lines = source.read(65536).decode('utf-8', errors='replace').splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        match = re.fullmatch(r'media_worker_mirror candidate=([2-3]) of=([2-3])', line)
+        if match and int(match[1]) <= int(match[2]):
+            return int(match[1]), int(match[2])
+    return None
+
+
 def safe_worker_http_failures(stderr_path: Path):
     """Accept bounded fixed diagnostics even when retry is forbidden/not used."""
     try:
@@ -135,6 +149,39 @@ def parse_worker_output(stdout_path: Path, *, download: bool) -> dict:
     return result
 
 
+class ImageUnavailable(RuntimeError):
+    """Non-200 image response; status is a plain int, never a URL or body."""
+
+    def __init__(self, status: int):
+        super().__init__('Image unavailable')
+        self.status = status
+
+
+MIRROR_STATUSES = frozenset({403, 404})
+
+
+async def download_image_candidates(session, urls: tuple[str, ...], destination: Path, limit: int) -> Path:
+    """Download one image, trying vetted mirrors of the *same* image in order.
+
+    Only a missing/forbidden copy (403/404) moves on to the next mirror.
+    Size limits, rejected destinations, invalid content and transport errors
+    stop immediately, exactly as before. Each attempt keeps its own bounds.
+    """
+    if not urls:
+        raise RuntimeError('Image unavailable')
+    for number, url in enumerate(urls, 1):
+        try:
+            result = await download_image(session, url, destination, limit)
+        except ImageUnavailable as exc:
+            if exc.status not in MIRROR_STATUSES or number == len(urls):
+                raise
+            continue
+        if number > 1:
+            log.info('media_download_fallback kind=image candidate=%d of=%d', number, len(urls))
+        return result
+    raise RuntimeError('Image unavailable')  # pragma: no cover - loop always returns or raises
+
+
 async def download_image(session, url: str, destination: Path, limit: int) -> Path:
     """Bounded image download; no decoding, provider filenames or HTML attachments."""
     async with asyncio.timeout(60):
@@ -148,7 +195,7 @@ async def download_image(session, url: str, destination: Path, limit: int) -> Pa
                     continue
                 if response.status != 200:
                     log.info('media_download_failure kind=image status=%d phase=response', response.status)
-                    raise RuntimeError('Image unavailable')
+                    raise ImageUnavailable(response.status)
                 if response.content_length and response.content_length > limit:
                     raise MediaTooLarge('Image exceeds remaining upload budget')
                 size = 0
@@ -310,6 +357,10 @@ async def _run_media(url: str, directory: Path, *, download: bool,
             if retry:
                 log.info('media_worker_retry source_key=%s mode=%s reason=%s phase=%s delay_ms=%d',
                          source_log_key(url), 'download' if download else 'metadata', *retry)
+            mirror = safe_worker_mirror(stderr_path)
+            if mirror:
+                log.info('media_worker_mirror source_key=%s candidate=%d of=%d',
+                         source_log_key(url), *mirror)
     if stdout_path.stat().st_size > 1024 * 1024:
         guard('stdout_limit')
         raise RuntimeError('Metadata too large')

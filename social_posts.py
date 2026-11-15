@@ -59,6 +59,8 @@ class SocialPost:
     media_complete: bool = True
     caption_known_empty: bool = False
     is_gif: bool = False
+    # Per-slide mirror URLs (same image, other CDN host), aligned with image_urls.
+    image_alternates: tuple[tuple[str, ...], ...] = ()
 
 
 def truncate(text: str, max_chars: int = MAX_TEXT) -> str:
@@ -556,6 +558,7 @@ async def fetch_social_post(session: aiohttp.ClientSession, url: str,
             handle=normalize_text(gallery['handle']),
             original=original, translation=None, has_media=True,
             has_video=False, image_urls=gallery['image_urls'],
+            image_alternates=gallery.get('image_alternates', ()),
             # The soundtrack is not copied: preserve the source when deletion
             # is configured. keep_link can still suppress the preview safely.
             media_complete=False, caption_known_empty=gallery['caption_known_empty'],
