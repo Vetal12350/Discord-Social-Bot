@@ -1,0 +1,13 @@
+{
+  "enabledPlugins": {
+    "ponytail@ponytail": true,
+    "humanizer@humanizer": true,
+    "context7@claude-plugins-official": true,
+    "agent-skills@addy-agent-skills": true
+  },
+  "extraKnownMarketplaces": {
+    "ponytail": { "source": { "source": "git", "url": "https://github.com/DietrichGebert/ponytail.git" } },
+    "humanizer": { "source": { "source": "git", "url": "https://github.com/blader/humanizer.git" } },
+    "addy-agent-skills": { "source": { "source": "github", "repo": "addyosmani/agent-skills" } }
+  }
+}
