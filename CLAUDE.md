@@ -28,7 +28,7 @@
 - #19 зеркала слайдов TikTok при 403/404 — выпущено на VPS, пост на 9 слайдов проверен в Discord.
 - #20 зеркала CDN для TikTok-видео при 403/404 (тот же формат, до 3 копий), #21 Dependabot (yt-dlp ежедневно, остальное minor/patch), #18 `tools/weekly_stats.py [--details]` — слиты в `main` (`e3b2da8`). Обновление VPS до `e3b2da8` владелец не подтвердил.
 - #24 (этот файл и `.claude/settings.json`) — слит в `main` (`9625c69`).
-- Открыты PR Dependabot: #22 `actions/checkout` 4→7, #23 `actions/setup-python` 5→7 — ждут решения владельца.
+- #25 (этот раздел, `graphify-out/` в `.gitignore`), #22 `actions/checkout` 4→7 и #23 `actions/setup-python` 5→7 — слиты в `main` (`a1c271e`), CI зелёный на 3.13/3.14.
 
 ### Решения и почему
 - Очередь сообщений не нужна: отказов `repost skipped` по inflight не было.
