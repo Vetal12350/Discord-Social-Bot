@@ -39,3 +39,5 @@ Thumbs.db
 *_copy.py
 *.zip
 *.bak
+# Local knowledge graph (graphify)
+graphify-out/
