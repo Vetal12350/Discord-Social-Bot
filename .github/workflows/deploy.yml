@@ -90,6 +90,7 @@ jobs:
           HOST: ${{ secrets.DEPLOY_HOST }}
           USER: ${{ secrets.DEPLOY_USER }}
           PORT: ${{ secrets.DEPLOY_PORT }}
+          SENT: ${{ steps.send.outputs.result }}
         run: |
           want=$([[ "$ACTION" == deploy ]] && echo DEPLOYED || echo ROLLED_BACK)
           for i in $(seq 1 90); do
@@ -99,7 +100,12 @@ jobs:
                   -i "$RUNNER_TEMP/ssh/key" "$USER@$HOST" "status $SHA" </dev/null) || continue
             echo "[$i] $out"
             case "$out" in
-              "$want") echo "$out $SHA" >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
+              "$want")
+                if [[ "$SENT" == UNKNOWN ]]; then
+                  # The request may never have arrived; this phase can be from an earlier run.
+                  echo "::error::state unknown: agent reports $out, but the request was not confirmed"; exit 1
+                fi
+                echo "$out $SHA" >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
               UNKNOWN_JOB) echo "::error::request was not accepted; nothing changed, safe to run again"; exit 1 ;;
               ROLLED_BACK|FAILED|NEEDS_OWNER) echo "$out $SHA" >> "$GITHUB_STEP_SUMMARY"; echo "::error::$out"; exit 1 ;;
             esac

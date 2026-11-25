@@ -20,6 +20,7 @@ class FakeHost:
         self.tests_ok, self.dirty, self.req_changed, self.pip_ok = tests_ok, dirty, requirements_changed, pip_ok
         self.clock, self.restarts, self.started_at = 1000.0, 0, None
         self.root_cmds, self.app_cmds, self.spawned, self.events = [], [], [], []
+        self.live_units, self.ready_delay = set(), 10
 
     def now(self):
         return self.clock
@@ -29,6 +30,7 @@ class FakeHost:
 
     def spawn(self, mode, sha):
         self.spawned.append((mode, sha))
+        self.live_units.add(f'discord-social-bot-{mode}-{sha[:12]}')
         return True
 
     def run(self, argv, timeout=900):
@@ -38,11 +40,13 @@ class FakeHost:
             self.started_at = self.clock
             return 0, ''
         if argv[:2] == ['systemctl', 'is-active']:
+            if argv[2].startswith('discord-social-bot-') and argv[2] != 'discord-social-bot.service':
+                return (0, 'active\n') if argv[2] in self.live_units else (3, 'inactive\n')
             return 0, 'active\n'
         if argv[:2] == ['systemctl', 'show']:
             return 0, f'{self.restarts}\n'
         if argv[0] == 'journalctl':
-            ready = self.head in self.healthy_shas and self.clock - self.started_at >= 10
+            ready = self.head in self.healthy_shas and self.clock - self.started_at >= self.ready_delay
             return 0, ('Connected to Discord; bot ID 1\n' if ready else 'starting\n')
         raise AssertionError(argv)
 
@@ -65,12 +69,16 @@ class FakeHost:
                 self.events.append(('reset', args[2]))
                 return 0, ''
             if args[0] == 'worktree':
+                self.events.append(('worktree', args[1]))
                 return 0, ''
+        if argv[1:3] == ['-m', 'venv']:
+            self.events.append(('venv', argv[-1]))
+            return 0, ''
         if argv[1:3] == ['-m', 'pip']:
             self.events.append(('pip', argv[-1]))
             return (0 if self.pip_ok else 1), ''
         if argv[0] == 'sh':
-            self.events.append(('tests', self.head))
+            self.events.append(('tests', argv[2].split(' && ')[1].split()[0]))
             return (0 if self.tests_ok else 1), ''
         raise AssertionError(argv)
 
@@ -103,7 +111,9 @@ class DeployAgentTests(unittest.TestCase):
         agent, host = self.agent()
         self.assertEqual(self.deploy(agent, host), 'DEPLOYED')
         self.assertEqual(host.head, NEW)
-        self.assertEqual(host.events[:3], [('tests', OLD), ('reset', NEW), ('restart', NEW)])
+        order = [e for e in host.events if e[0] in {'tests', 'reset', 'restart'}]
+        self.assertEqual(order[:3], [('tests', deploy_agent.PYTHON), ('reset', NEW), ('restart', NEW)])
+        self.assertIn(('worktree', 'prune'), host.events)  # a stale registration cannot block deploys
         self.assertEqual(agent.request('status', NEW), 'DEPLOYED')
 
     def test_git_pip_and_tests_never_run_as_root(self):
@@ -139,13 +149,58 @@ class DeployAgentTests(unittest.TestCase):
         self.assertEqual(host.head, OLD)
         self.assertNotIn('restart', [e[0] for e in host.events])
 
-    def test_new_pins_are_tested_and_restored_when_tests_fail(self):
+    def test_new_pins_are_tested_in_a_separate_venv_and_never_touch_the_live_one(self):
         agent, host = self.agent(tests_ok=False, requirements_changed=True)
         self.assertEqual(self.deploy(agent, host), 'FAILED')
-        pips = [e[1] for e in host.events if e[0] == 'pip']
-        self.assertEqual(pips, [str(deploy_agent.TEST_TREE / 'requirements.txt'),
-                                str(deploy_agent.APP / 'requirements.txt')])
-        self.assertLess(host.events.index(('pip', pips[0])), host.events.index(('tests', OLD)))
+        test_python = str(deploy_agent.TEST_VENV / 'bin' / 'python')
+        self.assertEqual([e for e in host.events if e[0] in {'venv', 'pip', 'tests'}], [
+            ('venv', str(deploy_agent.TEST_VENV)),
+            ('pip', str(deploy_agent.TEST_TREE / 'requirements.txt')),
+            ('tests', test_python)])
+        live_pips = [c for c in host.app_cmds if c[0] == deploy_agent.PYTHON and c[1:3] == ['-m', 'pip']]
+        self.assertEqual(live_pips, [])
+
+    def test_new_pins_reach_the_live_venv_only_after_green_tests(self):
+        agent, host = self.agent(requirements_changed=True)
+        self.assertEqual(self.deploy(agent, host), 'DEPLOYED')
+        live = [i for i, c in enumerate(host.app_cmds) if c[0] == deploy_agent.PYTHON and c[1:3] == ['-m', 'pip']]
+        tests = [i for i, c in enumerate(host.app_cmds) if c[0] == 'sh']
+        self.assertTrue(live and tests and tests[0] < live[0])
+
+    def test_crashed_worker_becomes_needs_owner_instead_of_busy_forever(self):
+        agent, host = self.agent()
+        self.assertEqual(agent.request('deploy', NEW), 'ACCEPTED')
+        host.live_units.clear()  # reboot or OOM kill: the worker unit is gone
+        self.assertEqual(agent.request('status', NEW), 'NEEDS_OWNER')
+        host.main = OTHER
+        self.assertEqual(agent.request('deploy', OTHER), 'BUSY')
+        self.assertEqual(agent.job(NEW)['phase'], 'NEEDS_OWNER')
+
+    def test_worker_exception_is_recorded_as_needs_owner(self):
+        agent, host = self.agent()
+        self.assertEqual(agent.request('deploy', NEW), 'ACCEPTED')
+
+        def boom(*args, **kwargs):
+            raise OSError('disk full')
+
+        agent.tests_pass = boom
+        out = io.StringIO()
+        with redirect_stdout(out):
+            main(['agent', '--worker', 'deploy', NEW], {}, agent)
+        self.assertEqual(agent.job(NEW)['phase'], 'NEEDS_OWNER')
+        self.assertNotIn('disk full', out.getvalue())
+
+    def test_late_ready_still_gets_its_stability_window(self):
+        agent, host = self.agent()
+        host.ready_delay = deploy_agent.HEALTH_TIMEOUT - 5
+        self.assertEqual(self.deploy(agent, host), 'DEPLOYED')
+
+    def test_unknown_restart_counter_is_unhealthy(self):
+        agent, host = self.agent()
+        original = host.run
+        host.run = lambda argv, timeout=900: ((1, '') if argv[:2] == ['systemctl', 'show']
+                                              else original(argv, timeout))
+        self.assertEqual(self.deploy(agent, host), 'NEEDS_OWNER')
 
     def test_unhealthy_release_is_rolled_back_automatically(self):
         agent, host = self.agent(healthy=(OLD,))

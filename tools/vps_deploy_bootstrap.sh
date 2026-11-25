@@ -38,6 +38,12 @@ done
 [[ "$REF" =~ ^[0-9a-f]{40}$ ]] || die "нужен --ref <40-символьный commit>"
 [ "$(id -u)" = 0 ] || die "запускайте через sudo"
 
+# raw.githubusercontent.com also serves fork-only commits: require REF to be on main.
+say "Проверяю, что коммит ${REF:0:12} есть в main"
+curl -fsS "https://api.github.com/repos/Vetal12350/Discord-Social-Bot/compare/main...$REF" \
+  | /usr/bin/python3 -I -c 'import json,sys; sys.exit(json.load(sys.stdin).get("status") not in ("identical","behind"))' \
+  || die "коммит $REF не найден в main"
+
 say "Проверка сервера"
 [ "$(systemctl show -p LoadState --value "$SERVICE")" = "loaded" ] || die "$SERVICE не найден"
 [ "$(systemctl show -p User --value "$SERVICE")" = "socialbot" ] || die "служба должна работать от socialbot"
@@ -51,10 +57,12 @@ command -v systemd-run >/dev/null && command -v visudo >/dev/null && command -v 
 
 if ! id "$DEPLOY_USER" >/dev/null 2>&1; then
   say "Создаю пользователя $DEPLOY_USER"
-  # No password is set; a shell is needed only to run the forced command.
-  useradd --create-home --shell /bin/bash "$DEPLOY_USER"
+  # No password; /bin/sh only runs the forced command and reads no rc files.
+  useradd --create-home --shell /bin/sh "$DEPLOY_USER"
 fi
-install -d -m 0700 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$HOME_DIR/.ssh"
+usermod --shell /bin/sh "$DEPLOY_USER"
+# Root-owned login files: the deploy user cannot replace its own forced command.
+install -d -m 0755 -o root -g root "$HOME_DIR/.ssh"
 
 say "Устанавливаю агент из коммита ${REF:0:12}"
 tmp_agent="$(mktemp)"
@@ -74,14 +82,18 @@ visudo -cf "$sudo_tmp" >/dev/null || die "правило sudo не прошло 
 install -o root -g root -m 0440 "$sudo_tmp" "$SUDOERS"
 rm -f "$sudo_tmp"
 
-if ! grep -qs "$AGENT" "$HOME_DIR/.ssh/authorized_keys"; then
+pub="$(grep -so 'ssh-ed25519 [A-Za-z0-9+/=]*' "$HOME_DIR/.ssh/authorized_keys" | head -1 || true)"
+if [ -z "$pub" ]; then
   say "Создаю отдельный SSH-ключ для GitHub Actions"
   rm -f "$KEY" "$KEY.pub"
   ssh-keygen -q -t ed25519 -N "" -C "discord-social-bot-github-actions" -f "$KEY"
-  printf 'restrict,command="sudo -n %s" %s\n' "$AGENT" "$(cat "$KEY.pub")" > "$HOME_DIR/.ssh/authorized_keys"
-  chown "$DEPLOY_USER:$DEPLOY_USER" "$HOME_DIR/.ssh/authorized_keys"
-  chmod 0600 "$HOME_DIR/.ssh/authorized_keys"
+  pub="$(cut -d' ' -f1,2 "$KEY.pub")"
 fi
+# Always rewrite the line: a re-run restores the forced command around the same key.
+keys_tmp="$(mktemp)"
+printf 'restrict,command="sudo -n %s" %s discord-social-bot-github-actions\n' "$AGENT" "$pub" > "$keys_tmp"
+install -o root -g root -m 0644 "$keys_tmp" "$HOME_DIR/.ssh/authorized_keys"
+rm -f "$keys_tmp"
 if sshd -T 2>/dev/null | grep -qiE '^allowusers ' && ! sshd -T 2>/dev/null | grep -iE '^allowusers ' | grep -qw "$DEPLOY_USER"; then
   echo "ВНИМАНИЕ: в sshd задан AllowUsers без $DEPLOY_USER — добавьте его вручную." >&2
 fi

@@ -24,12 +24,14 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import time
 
 APP = Path('/opt/discord-social-bot/app')
 TEST_TREE = Path('/opt/discord-social-bot/deploy-test')
+TEST_VENV = Path('/opt/discord-social-bot/deploy-venv')
 PYTHON = '/opt/discord-social-bot/venv/bin/python'
 APP_USER = 'socialbot'
 APP_HOME = '/opt/discord-social-bot'
@@ -40,6 +42,7 @@ SHA_RE = re.compile(r'[0-9a-f]{40}')
 HEALTH_TIMEOUT = 120  # seconds until the bot must report READY
 HEALTH_STABLE = 20    # seconds without a systemd restart after READY
 FINAL = {'DEPLOYED', 'ROLLED_BACK', 'FAILED', 'NEEDS_OWNER'}
+SETTLED = FINAL - {'NEEDS_OWNER'}  # NEEDS_OWNER blocks every new operation
 
 
 class Rejected(Exception):
@@ -53,11 +56,18 @@ class Host:
 
     def run(self, argv: list[str], timeout: int = 900) -> tuple[int, str]:
         try:
-            done = subprocess.run(argv, capture_output=True, text=True, env=self.ENV,
-                                  timeout=timeout, stdin=subprocess.DEVNULL)
-        except (OSError, subprocess.TimeoutExpired):
+            proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                                    env=self.ENV, stdin=subprocess.DEVNULL, start_new_session=True)
+        except OSError:
             return 127, ''
-        return done.returncode, done.stdout
+        try:
+            out, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # Kill the whole group: runuser's children (pip, tests) must not outlive it.
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+            return 124, ''
+        return proc.returncode, out
 
     def as_app(self, argv: list[str], timeout: int = 900) -> tuple[int, str]:
         # Repository code (tests, pip) runs with the bot's rights, never root's.
@@ -95,11 +105,23 @@ class Agent:
         tmp.write_text(json.dumps(job), encoding='utf-8')
         os.replace(tmp, path)
 
+    def unit_alive(self, job: dict) -> bool:
+        rc, out = self.host.run(['systemctl', 'is-active', f"discord-social-bot-{job['mode']}-{job['sha'][:12]}"], 30)
+        return rc == 0 and out.strip() in {'active', 'activating'}
+
+    def phase(self, job: dict, record: bool) -> str:
+        """A job whose worker died (reboot, OOM) can never finish: that needs the owner."""
+        if job['phase'] in FINAL or self.unit_alive(job):
+            return job['phase']
+        if record:
+            self.save(job, 'NEEDS_OWNER')
+        return 'NEEDS_OWNER'
+
     def busy(self) -> bool:
         for path in self.state.glob('*.json'):
             job = self.job(path.stem)
-            if job and job.get('phase') not in FINAL - {'NEEDS_OWNER'}:
-                return True  # running, or NEEDS_OWNER blocks until the owner clears it
+            if job and self.phase(job, record=True) not in SETTLED:
+                return True
         return False
 
     def locked(self):
@@ -128,43 +150,50 @@ class Agent:
         if self.host.run(['systemctl', 'restart', SERVICE], 120)[0] != 0:
             return False
         before = self.restarts()
+        if before is None:
+            return False
         ready_at = None
-        while self.host.now() - started < HEALTH_TIMEOUT + HEALTH_STABLE:
+        while True:
             self.host.sleep(5)
             if not self.active() or self.restarts() != before:
                 return False
-            if ready_at is None:
-                rc, out = self.host.run(['journalctl', '-u', SERVICE, '--since', f'@{int(started)}',
-                                         '-o', 'cat', '--no-pager'], 60)
-                if rc == 0 and READY in out:
-                    ready_at = self.host.now()
-                elif self.host.now() - started > HEALTH_TIMEOUT:
-                    return False
-            elif self.host.now() - ready_at >= HEALTH_STABLE:
-                return True
-        return False
+            if ready_at is not None:
+                if self.host.now() - ready_at >= HEALTH_STABLE:
+                    return True
+                continue
+            rc, out = self.host.run(['journalctl', '-u', SERVICE, '--since', f'@{int(started)}',
+                                     '-o', 'cat', '--no-pager'], 60)
+            if rc == 0 and READY in out:
+                ready_at = self.host.now()
+            elif self.host.now() - started > HEALTH_TIMEOUT:
+                return False
 
     def requirements_changed(self, a: str, b: str) -> bool:
         return self.git('diff', '--quiet', a, b, '--', 'requirements.txt')[0] != 0
 
-    def pip(self, tree: Path) -> bool:
-        return self.host.as_app([PYTHON, '-m', 'pip', 'install', '-q', '-r', str(tree / 'requirements.txt')])[0] == 0
+    def pip(self, python: str, tree: Path) -> bool:
+        return self.host.as_app([python, '-m', 'pip', 'install', '-q', '-r', str(tree / 'requirements.txt')])[0] == 0
 
     def switch(self, target: str, other: str) -> bool:
         if self.git('reset', '--hard', target)[0] != 0:
             return False
-        return not self.requirements_changed(other, target) or self.pip(APP)
+        return not self.requirements_changed(other, target) or self.pip(PYTHON, APP)
 
     def tests_pass(self, sha: str, previous: str) -> bool:
-        """Test the new commit in a separate checkout; the live app is untouched."""
+        """Test the new commit in a separate checkout; the live app and venv are untouched."""
         self.git('worktree', 'remove', '--force', str(TEST_TREE))
+        self.git('worktree', 'prune')
         if self.git('worktree', 'add', '--detach', str(TEST_TREE), sha)[0] != 0:
             return False
         try:
-            # The shared venv must hold the new pins, or the tests prove nothing.
-            if self.requirements_changed(previous, sha) and not self.pip(TEST_TREE):
-                return False
-            rc, _ = self.host.as_app(['sh', '-c', f'cd {TEST_TREE} && {PYTHON} -m unittest discover -s tests'])
+            python = PYTHON
+            if self.requirements_changed(previous, sha):
+                # New pins go to a throwaway venv: the running bot keeps its own.
+                python = str(TEST_VENV / 'bin' / 'python')
+                if (self.host.as_app([PYTHON, '-m', 'venv', '--clear', str(TEST_VENV)])[0] != 0
+                        or not self.pip(python, TEST_TREE)):
+                    return False
+            rc, _ = self.host.as_app(['sh', '-c', f'cd {TEST_TREE} && {python} -m unittest discover -s tests'])
             return rc == 0
         finally:
             self.git('worktree', 'remove', '--force', str(TEST_TREE))
@@ -173,7 +202,7 @@ class Agent:
     def request(self, action: str, sha: str) -> str:
         if action == 'status':
             job = self.job(sha)
-            return job['phase'] if job else 'UNKNOWN_JOB'
+            return self.phase(job, record=False) if job else 'UNKNOWN_JOB'
         with self.locked():
             if self.busy():
                 return 'BUSY'
@@ -213,10 +242,8 @@ class Agent:
         if mode == 'deploy':
             self.save(job, 'TESTING')
             if not self.tests_pass(sha, previous):
-                # Code untouched; put the old pins back if the venv was changed.
-                restored = not self.requirements_changed(previous, sha) or self.pip(APP)
-                self.save(job, 'FAILED' if restored else 'NEEDS_OWNER')
-                return job['phase']
+                self.save(job, 'FAILED')  # live code and venv untouched
+                return 'FAILED'
         self.save(job, 'SWITCHING')
         if self.switch(target, sha if mode == 'rollback' else previous) and self.healthy():
             self.save(job, 'DEPLOYED' if mode == 'deploy' else 'ROLLED_BACK')
@@ -244,7 +271,18 @@ def main(argv: list[str], environ: dict, agent: Agent | None = None) -> int:
         if len(argv) == 4 and argv[1] == '--worker':
             if argv[2] not in {'deploy', 'rollback'} or not SHA_RE.fullmatch(argv[3]):
                 raise Rejected('bad_request')
-            print((agent or Agent()).work(argv[2], argv[3]))
+            agent = agent or Agent()
+            try:
+                print(agent.work(argv[2], argv[3]))
+            except Exception:
+                # The live state is unknown after a crash mid-job: stop until the owner looks.
+                job = agent.job(argv[3])
+                if job and job.get('phase') not in FINAL:
+                    try:
+                        agent.save(job, 'NEEDS_OWNER')
+                    except OSError:
+                        pass  # busy() still sees a dead worker unit as NEEDS_OWNER
+                print('NEEDS_OWNER')
             return 0
         action, sha = parse(environ.get('SSH_ORIGINAL_COMMAND'))
         result = (agent or Agent()).request(action, sha)
