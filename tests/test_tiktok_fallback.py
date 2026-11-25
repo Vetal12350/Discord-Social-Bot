@@ -71,6 +71,22 @@ class TikTokFallbackTests(unittest.IsolatedAsyncioTestCase):
         with patch('social_posts.tiktok_ytdlp_metadata', new_callable=AsyncMock, return_value=None):
             self.assertIsNone(await fetch_social_post(session, SHORT, translate=False))
 
+    async def test_dead_end_reasons_are_logged_as_fixed_categories(self):
+        cases = [
+            ([Response(302)], 'reason=no_location'),
+            ([Response(302, 'https://www.tiktok.com/'), Response(200)], 'kind=home'),
+            ([Response(302, 'https://www.tiktok.com/@creator'), Response(200)], 'kind=profile'),
+            ([Response(302, 'https://www.tiktok.com/live/xyz'), Response(200)], 'kind=other'),
+            ([Response(302, 'https://www.tiktok.com/@creator/live'), Response(200)], 'kind=other'),
+        ]
+        for responses, expected in cases:
+            with self.subTest(expected=expected), self.assertLogs('social_posts', 'INFO') as logs:
+                self.assertIsNone(await resolve_tiktok_url(Session(responses), SHORT))
+            text = '\n'.join(logs.output)
+            self.assertIn(expected, text)
+            self.assertNotIn('creator', text)  # never echo handles or paths
+            self.assertNotIn('xyz', text)
+
     async def test_unresolved_shortcode_does_not_request_other_hosts(self):
         session = Session([Response(302, 'https://attacker.example@www.tiktok.com:444/post')])
         self.assertIsNone(await resolve_tiktok_url(session, SHORT))
