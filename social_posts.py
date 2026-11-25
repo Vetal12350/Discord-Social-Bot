@@ -480,6 +480,7 @@ async def resolve_tiktok_url(session, url: str) -> str | None:
                 if response.status in {301, 302, 303, 307, 308}:
                     location = response.headers.get('Location')
                     if not location:
+                        log.info('TikTok redirect unavailable reason=no_location')
                         return None
                     target = urljoin(url, location)
                     parsed_target = urlsplit(target)
@@ -488,7 +489,14 @@ async def resolve_tiktok_url(session, url: str) -> str | None:
                         return None
                     url = target
                 elif response.status == 200:
-                    return url if is_supported_url(url) else None
+                    if is_supported_url(url):
+                        return url
+                    # Fixed category only: the path may contain a handle.
+                    path = urlsplit(url).path
+                    kind = ('home' if path in ('', '/') else
+                            'profile' if re.fullmatch(r'/@[^/]+/?', path) else 'other')
+                    log.info('TikTok redirect unsupported_destination kind=%s', kind)
+                    return None
                 else:
                     log.info('TikTok redirect unavailable status=%d', response.status)
                     return None
