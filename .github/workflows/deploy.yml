@@ -1,0 +1,111 @@
+name: Deploy to VPS
+
+# Manual only: GitHub -> Actions -> Deploy to VPS -> Run workflow (phone works),
+# or the agent session after the owner's merge. Only the current head of main
+# with green CI can be installed, so the owner's merge is the decision.
+# Secrets live only in the `production` environment. See docs/VPS_AUTO_UPDATE_RU.md.
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Exact main commit SHA (40 lowercase hex)"
+        required: true
+        type: string
+      action:
+        description: "deploy = install this SHA; rollback = this SHA is current, go back"
+        required: true
+        default: deploy
+        type: choice
+        options: [deploy, rollback]
+
+permissions:
+  contents: read
+  checks: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+env:
+  SHA: ${{ inputs.sha }}
+  ACTION: ${{ inputs.action }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Validate input
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::sha must be 40 lowercase hex"; exit 1; }
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::run the workflow from main"; exit 1; }
+      - name: Require the current head of main with green CI
+        if: inputs.action == 'deploy'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          [[ "$head" == "$SHA" ]] || { echo "::error::sha is not the current head of main"; exit 1; }
+          runs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs?per_page=100" \
+            --jq '[.check_runs[] | select(.name | startswith("syntax-and-imports"))]')
+          total=$(jq length <<<"$runs")
+          ok=$(jq '[.[] | select(.conclusion == "success")] | length' <<<"$runs")
+          [[ "$total" -ge 2 && "$ok" == "$total" ]] || { echo "::error::CI not green for $SHA"; exit 1; }
+
+  run:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          umask 077
+          mkdir -p "$RUNNER_TEMP/ssh"
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/ssh/known_hosts"
+      - name: Send request (once, never retried)
+        id: send
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+          PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set +e
+          out=$(ssh -T -p "${PORT:-22}" -o BatchMode=yes -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes \
+                -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" -o ConnectTimeout=20 \
+                -i "$RUNNER_TEMP/ssh/key" "$USER@$HOST" "$ACTION $SHA" </dev/null)
+          echo "Agent: ${out:-<no answer>}"
+          case "$out" in
+            ACCEPTED|ALREADY_DEPLOYED) echo "result=$out" >> "$GITHUB_OUTPUT" ;;
+            BUSY|REJECTED*) echo "::error::$out"; exit 1 ;;
+            *) echo "::warning::no clear answer; checking status only"; echo "result=UNKNOWN" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - name: Wait for result (read-only status polling)
+        if: steps.send.outputs.result != 'ALREADY_DEPLOYED'
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+          PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          want=$([[ "$ACTION" == deploy ]] && echo DEPLOYED || echo ROLLED_BACK)
+          for i in $(seq 1 90); do
+            sleep 10
+            out=$(ssh -T -p "${PORT:-22}" -o BatchMode=yes -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes \
+                  -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" -o ConnectTimeout=20 \
+                  -i "$RUNNER_TEMP/ssh/key" "$USER@$HOST" "status $SHA" </dev/null) || continue
+            echo "[$i] $out"
+            case "$out" in
+              "$want") echo "$out $SHA" >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
+              UNKNOWN_JOB) echo "::error::request was not accepted; nothing changed, safe to run again"; exit 1 ;;
+              ROLLED_BACK|FAILED|NEEDS_OWNER) echo "$out $SHA" >> "$GITHUB_STEP_SUMMARY"; echo "::error::$out"; exit 1 ;;
+            esac
+          done
+          echo "::error::no final status in 15 minutes. Do not re-run; check status only."
+          exit 1
+      - name: Remove key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/ssh"
