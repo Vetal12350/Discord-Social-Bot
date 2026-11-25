@@ -381,7 +381,7 @@ class RepostIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('DeepL', session.sent[0][0]['content'])
         current.delete.assert_not_awaited()
 
-    async def test_third_post_preparation_failure_is_correlated_without_sending_or_deleting(self):
+    async def test_third_post_preparation_failure_is_correlated_and_falls_back_to_player_link(self):
         source = 'https://vt.tiktok.com/ZSp98gAmN'
         session = Session()
         post = await self.metadata(session)
@@ -389,21 +389,90 @@ class RepostIntegrationTests(unittest.IsolatedAsyncioTestCase):
         with patch('bot.run_media', new_callable=AsyncMock,
                    side_effect=RuntimeError('https://cdn.example/?signature=DO_NOT_LOG')), \
              self.assertLogs('discord-video-bot', level='INFO') as captured:
-            with self.assertRaises(WebhookFailure):
-                await VideoBot.repost_message(self.bot(session), msg, post, source, rights)
+            await VideoBot.repost_message(self.bot(session), msg, post, source, rights)
         output = '\n'.join(captured.output)
-        self.assertIn('repost_failure stage=video_prepare error_type=RuntimeError', output)
+        self.assertIn('repost_video_fallback stage=video_prepare error_type=RuntimeError', output)
         self.assertIn('source_key=tiktok-short:ZSp98gAmN message_id=1 channel_id=7', output)
         self.assertNotIn('DO_NOT_LOG', output)
-        self.assertEqual(session.sent, [])
-        current.delete.assert_not_awaited()
-        current.edit.assert_not_awaited()
+        self.assertNotIn('tnktok', output)  # never log URLs
+        payload, uploads, _ = session.sent[0]
+        self.assertEqual(len(session.sent), 1)
+        self.assertEqual(uploads, [])
+        self.assertTrue(payload['content'].endswith('\nhttps://vt.tnktok.com/ZSp98gAmN'))
+        self.assertEqual(payload['flags'], 0)  # let Discord unfurl the player link
 
-    async def test_preparation_errors_post_nothing_and_keep_source(self):
+    async def test_video_failures_fall_back_to_player_link_and_follow_source_action(self):
         for failure in ('worker', 'missing', 'oversized', 'codec'):
             with self.subTest(failure=failure):
                 session = Session()
                 post = await self.metadata(session)
+                msg, current, rights = self.message()
+
+                async def worker(url, directory, *, download, limit):
+                    if failure == 'worker':
+                        raise RuntimeError('Provider unavailable')
+                    if failure == 'missing':
+                        return {}
+                    if failure == 'oversized':
+                        with (directory / 'video.mp4').open('wb') as stream:
+                            stream.truncate(limit + 1)
+                    else:
+                        (directory / 'video.mp4').write_bytes(mp4().replace(b'avc1', b'hvc1'))
+                    return {}
+
+                with patch('bot.run_media', side_effect=worker), \
+                     patch.object(self.cache, 'get', new_callable=AsyncMock, return_value=None):
+                    await VideoBot.repost_message(self.bot(session), msg, post, SOURCE, rights)
+                payload, uploads, _ = session.sent[0]
+                self.assertEqual(uploads, [])
+                self.assertIn(ORIGINAL, payload['content'])
+                self.assertTrue(payload['content'].endswith(
+                    '\nhttps://tnktok.com/@creator/video/7123456789012345678'))
+                self.assertEqual(payload['flags'], 0)
+                current.delete.assert_awaited_once()
+
+    async def test_player_link_fallback_keeps_source_when_receipt_text_differs(self):
+        session = Session(failure='text')
+        post = await self.metadata(session)
+        msg, current, rights = self.message()
+        with patch('bot.run_media', new_callable=AsyncMock, side_effect=RuntimeError('down')), \
+             patch.object(self.cache, 'get', new_callable=AsyncMock, return_value=None):
+            await VideoBot.repost_message(self.bot(session), msg, post, SOURCE, rights)
+        self.assertEqual(len(session.sent), 1)
+        current.delete.assert_not_awaited()
+        current.edit.assert_not_awaited()
+
+    async def test_player_link_fallback_never_clips_caption_silently(self):
+        session = Session()
+        post = replace(await self.metadata(session), original='x' * 1990, translation='',
+                       translation_unavailable=False)
+        msg, current, rights = self.message()
+        with patch('bot.run_media', new_callable=AsyncMock, side_effect=RuntimeError('down')), \
+             patch.object(self.cache, 'get', new_callable=AsyncMock, return_value=None):
+            await VideoBot.repost_message(self.bot(session), msg, post, SOURCE, rights)
+        content = session.sent[0][0]['content']
+        self.assertLessEqual(len(content.encode('utf-16-le')) // 2, 2000)
+        self.assertTrue(content.endswith('\nhttps://tnktok.com/@creator/video/7123456789012345678'))
+        current.delete.assert_not_awaited()  # clipped text is incomplete
+        current.edit.assert_not_awaited()
+
+    async def test_successful_video_repost_still_suppresses_link_cards(self):
+        session = Session()
+        post = await self.metadata(session)
+        msg, _, rights = self.message()
+        with patch('bot.run_media', side_effect=self.worker):
+            await VideoBot.repost_message(self.bot(session), msg, post, SOURCE, rights)
+        payload, uploads, _ = session.sent[0]
+        self.assertEqual(payload['flags'], 4)
+        self.assertEqual(len(uploads), 1)
+        self.assertNotIn('tnktok', payload['content'])
+
+    async def test_preparation_errors_post_nothing_for_galleries(self):
+        for failure in ('worker',):
+            with self.subTest(failure=failure):
+                session = Session()
+                post = replace(await self.metadata(session),
+                               image_urls=('https://p16-sign.tiktokcdn.com/slide1.jpeg',))
                 msg, current, rights = self.message()
 
                 async def worker(url, directory, *, download, limit):

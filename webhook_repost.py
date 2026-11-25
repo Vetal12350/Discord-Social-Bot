@@ -143,7 +143,7 @@ class WebhookPoster:
         return webhook, parent.id, thread_id
 
     async def execute(self, session, webhook, parent_id, thread_id, channel_id,
-                      author, content: str, files: list[discord.File]) -> Receipt:
+                      author, content: str, files: list[discord.File], *, player_link: str = '') -> Receipt:
         """One REST attempt with wait=true; no retry after an ambiguous POST result.
 
         discord.py's webhook adapter retries 5xx/connection errors, and execute-webhook
@@ -155,7 +155,8 @@ class WebhookPoster:
         username, avatar = identity(author)
         payload = {'content': content, 'username': username, 'avatar_url': avatar,
                    'allowed_mentions': {'parse': [], 'users': [], 'roles': [], 'replied_user': False},
-                   'flags': 4,  # SUPPRESS_EMBEDS: no automatic link cards; attachments stay visible.
+                   # SUPPRESS_EMBEDS (4) hides link cards; a player-link fallback needs its card.
+                   'flags': 0 if player_link else 4,
                    'attachments': [{'id': index, 'filename': item.filename} for index, item in enumerate(files)]}
         params = {'wait': 'true'}
         if thread_id is not None:
@@ -201,8 +202,10 @@ class WebhookPoster:
         actual = [item['filename'] for item in attachments
                   if isinstance(item, dict) and isinstance(item.get('filename'), str)] if isinstance(attachments, list) else []
         expected = [item.filename for item in files]
-        confirmed = bool(files) and Counter(actual) == Counter(expected) and data.get('content') == content
-        reason = ('no_media' if not files else 'attachment_mismatch' if Counter(actual) != Counter(expected)
+        # A player link stands in for the file only when it reached Discord in the text.
+        delivered = bool(files) or (bool(player_link) and player_link in content)
+        confirmed = delivered and Counter(actual) == Counter(expected) and data.get('content') == content
+        reason = ('no_media' if not delivered else 'attachment_mismatch' if Counter(actual) != Counter(expected)
                   else 'text_mismatch' if data.get('content') != content else 'confirmed')
         log.info('webhook_confirmation reason=%s expected_files=%d actual_files=%d text_matches=%s',
                  reason, len(expected), len(actual), data.get('content') == content)
