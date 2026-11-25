@@ -178,7 +178,7 @@ sudo systemctl stop discord-social-bot.service
 Для **ручного обновления** заранее запиши текущий commit SHA, останови только Discord Social Bot, обнови код и зависимости и проверь его перед повторным запуском:
 
 ```bash
-sudo git -C /opt/discord-social-bot/app rev-parse HEAD
+sudo -u socialbot git -C /opt/discord-social-bot/app rev-parse HEAD
 sudo systemctl stop discord-social-bot.service
 sudo -u socialbot git -C /opt/discord-social-bot/app pull --ff-only
 sudo -u socialbot /opt/discord-social-bot/venv/bin/python \
