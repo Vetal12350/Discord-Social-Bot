@@ -16,7 +16,7 @@ from discord import app_commands
 from dotenv import load_dotenv
 
 from config import Config
-from link_utils import canonical_url, extract_urls, is_supported_url, source_log_key
+from link_utils import canonical_url, extract_urls, is_supported_url, source_log_key, to_embed_url
 from media import MAX_BYTES, MediaTooLarge, download_image_candidates, download_mp4, run_media
 from media_cache import MediaCache
 from process_limits import under_pressure
@@ -24,7 +24,7 @@ from mp4_info import InvalidMP4, inspect_mp4
 from safe_http import make_session
 from social_posts import SocialPost, fetch_social_post
 from animation import AnimationError, convert_animation
-from webhook_repost import WebhookFailure, WebhookPoster, caption, delete_source_if_safe
+from webhook_repost import WebhookFailure, WebhookPoster, caption, delete_source_if_safe, units
 
 log = logging.getLogger('discord-video-bot')
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -289,6 +289,7 @@ class VideoBot(discord.Client):
         content, text_complete = caption(post, translate=self.config.translate)
         media_complete = post.media_complete
         sending = False
+        player_link = ''
         stage = 'prepare'
         try:
             async with asyncio.timeout(180):
@@ -308,8 +309,18 @@ class VideoBot(discord.Client):
                             cached_animation = video is not None
                             if video is None:
                                 stage = 'video_prepare'
-                                video, info = await self.prepare_video(post, source, folder, limit)
-                                if post.platform == 'TikTok' and not info.audio_codecs:
+                                try:
+                                    video, info = await self.prepare_video(post, source, folder, limit)
+                                except (RuntimeError, OSError, ValueError, aiohttp.ClientError) as exc:
+                                    # Single videos only: a gallery/GIF is never published partially.
+                                    if isinstance(exc, WebhookFailure) or post.is_gif or post.image_urls:
+                                        raise
+                                    log.info('repost_video_fallback stage=video_prepare error_type=%s '
+                                             'source_key=%s message_id=%s channel_id=%s', type(exc).__name__,
+                                             source_log_key(source), message.id, message.channel.id)
+                                    player_link = to_embed_url(source)
+                                    video = info = None
+                                if info and post.platform == 'TikTok' and not info.audio_codecs:
                                     # A fitting silent variant does not prove the
                                     # source soundtrack was preserved.
                                     media_complete = False
@@ -321,8 +332,9 @@ class VideoBot(discord.Client):
                                 await self.media_cache.put(animation_key, video)
                                 log.info('X GIF converted format=%s frames=%s loop=%s bytes=%s',
                                          details['format'], details['frames'], details['loop'], details['bytes'])
-                            paths.append(video)
-                            used += video.stat().st_size
+                            if video is not None:
+                                paths.append(video)
+                                used += video.stat().st_size
                         for index, image in enumerate(post.image_urls[:10 - len(paths)]):
                             stage = 'image_prepare'
                             remaining = limit - used
@@ -339,7 +351,12 @@ class VideoBot(discord.Client):
                                 await self.media_cache.put(photo_key, photo)
                             paths.append(photo)
                             used += photo.stat().st_size
-                        if post.has_media and not paths:
+                        if player_link:
+                            line = ('\n' if content else '') + player_link
+                            if units(content + line) > 2000:
+                                content, text_complete = clip(content, 2000 - units(line)), False
+                            content += line
+                        if post.has_media and not paths and not player_link:
                             raise WebhookFailure('Не удалось получить медиа; исходное сообщение сохранено.')
                         if not content and not paths:
                             raise WebhookFailure('У публикации нет доступного текста или медиа.')
@@ -348,7 +365,7 @@ class VideoBot(discord.Client):
                         stage = 'webhook'
                         receipt = await self.webhook_poster.execute(
                             self.http_session, webhook, parent_id, thread_id, message.channel.id,
-                            message.author, content, files)
+                            message.author, content, files, player_link=player_link)
                         log.info('repost_receipt stage=webhook source_key=%s message_id=%s channel_id=%s '
                                  'media_confirmed=%s reason=%s', source_log_key(source), message.id,
                                  message.channel.id, receipt.media_confirmed, receipt.confirmation_reason)
